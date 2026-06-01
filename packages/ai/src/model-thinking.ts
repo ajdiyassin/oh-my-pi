@@ -596,10 +596,12 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 }
 
 function inferFallbackEfforts<TApi extends Api>(model: ApiModel<TApi>): readonly Effort[] {
-	if (model.api === "anthropic-messages") {
-		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+	// DeepSeek V4 only supports high (mapped to 'high') / max (mapped to 'xhigh')
+	// reasoning effort, regardless of API type (openai-completions, anthropic-messages, etc.).
+	if (model.id.includes("deepseek-v4")) {
+		return [Effort.High, Effort.XHigh];
 	}
-	if (model.name.includes("deepseek-v4")) {
+	if (model.api === "anthropic-messages") {
 		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	if (model.api === "bedrock-converse-stream") {
