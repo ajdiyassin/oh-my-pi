@@ -2471,7 +2471,12 @@ function createOpenCodeApiResolution(
 	};
 }
 
-const OPENCODE_ZEN_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen");
+const OPENCODE_ZEN_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen", {
+	// models.dev declares minimax-m3-free with `provider.npm = "@ai-sdk/anthropic"`,
+	// but OpenCode Zen serves it at `https://opencode.ai/zen/v1/chat/completions`
+	// (same issue as #887 for OpenCode Go). Override to keep the correct routing.
+	"minimax-m3-free": "openai-completions",
+});
 // OpenCode Go: models.dev declares minimax-m2.7 / qwen3.5-plus / qwen3.6-plus
 // with `provider.npm = "@ai-sdk/anthropic"`, but the OpenCode Go gateway only
 // serves them at `https://opencode.ai/zen/go/v1/chat/completions` (verified
