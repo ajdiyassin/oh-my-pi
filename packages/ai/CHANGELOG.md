@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Hardened the shared Amazon EventStream decoder with bounded frames, headers, and retained buffers plus strict malformed-header handling for Kiro and Bedrock streams ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
 ## [17.1.2] - 2026-07-24
 
 ### Added
