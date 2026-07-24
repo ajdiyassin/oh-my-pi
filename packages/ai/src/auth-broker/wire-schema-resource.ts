@@ -125,6 +125,7 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 	const apiKeyCredentialSchema = type({
 		"+": "reject",
 		type: "'api_key'",
+		"apiEndpoint?": "string",
 		key: type("string").atLeastLength(1),
 		"source?": "'login'",
 	});

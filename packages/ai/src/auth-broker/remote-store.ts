@@ -686,16 +686,18 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		credentials: AuthCredential[],
 	): Promise<StoredAuthCredential[]> {
 		const existing = this.listAuthCredentials(provider);
-		for (const entry of existing) {
-			try {
+		try {
+			for (const entry of existing) {
 				await this.#client.disableCredential(entry.id, "replaced by newer credential");
-			} catch (error) {
-				logger.warn("auth-broker disable during replace failed", {
-					provider,
-					id: entry.id,
-					error: String(error),
-				});
 			}
+		} catch (error) {
+			await this.refreshSnapshot().catch(refreshError => {
+				logger.warn("auth-broker snapshot resync after replace failure failed", {
+					provider,
+					error: String(refreshError),
+				});
+			});
+			throw error;
 		}
 		// Snapshot reflects the disables before we add the new rows so a concurrent
 		// reader cannot momentarily see old + new together for the same provider.
@@ -929,6 +931,12 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			email: refreshed.email,
 			projectId: refreshed.projectId,
 			enterpriseUrl: refreshed.enterpriseUrl,
+			apiEndpoint: refreshed.apiEndpoint,
+			orgId: refreshed.orgId,
+			orgName: refreshed.orgName,
+			kiroClientId: refreshed.kiroClientId,
+			kiroTokenEndpoint: refreshed.kiroTokenEndpoint,
+			kiroAuthMethod: refreshed.kiroAuthMethod,
 		};
 	}
 

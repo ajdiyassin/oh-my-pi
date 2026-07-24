@@ -10,6 +10,10 @@ export type OAuthCredentials = {
 	email?: string;
 	accountId?: string;
 	apiEndpoint?: string;
+	kiroClientId?: string;
+	kiroClientSecret?: string;
+	kiroTokenEndpoint?: string;
+	kiroAuthMethod?: "builder-id" | "google" | "github" | "browser";
 	/**
 	 * Organization/workspace the token is scoped to (e.g. an Anthropic org
 	 * UUID or a ChatGPT workspace id). Captured once at login; token refreshes
@@ -28,6 +32,16 @@ export type OAuthCredentials = {
 	 */
 	authorizedAt?: number;
 };
+
+export type ApiKeyLoginCredentials = {
+	type: "api_key";
+	key: string;
+	apiEndpoint?: string;
+};
+
+export type ProviderLoginResult = OAuthCredentials | ApiKeyLoginCredentials | string;
+
+export type CredentialPolicy = "append" | "replace";
 
 export type OAuthProvider = OAuthProviderUnion;
 
@@ -88,9 +102,11 @@ export interface OAuthProviderInterface {
 	readonly id: OAuthProviderId;
 	readonly name: string;
 	readonly sourceId?: string;
-	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials | string>;
+	login(callbacks: OAuthLoginCallbacks): Promise<ProviderLoginResult>;
 	refreshToken?(credentials: OAuthCredentials): Promise<OAuthCredentials>;
 	getApiKey?(credentials: OAuthCredentials): string;
 	/** Store resulting OAuth credentials under a different provider id. */
 	readonly storeCredentialsAs?: string;
+	/** Whether a successful login appends to or replaces the provider's credential pool. */
+	readonly credentialPolicy?: CredentialPolicy;
 }
