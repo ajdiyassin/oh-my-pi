@@ -64,6 +64,9 @@
 ### Fixed
 
 - Disabled the first-event watchdog for local OpenAI-compatible backends while retaining the 300-second inter-event watchdog, so long llama.cpp prompt prefill is not canceled and retried ([#6524](https://github.com/can1357/oh-my-pi/issues/6524)).
+### Added
+
+- Added unreachable Kiro Phase 1 route validation, bounded model discovery, schema-derived model mapping, exact historical aliases, and authoritative 24-hour model-cache options ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ## [17.1.1] - 2026-07-24
 
