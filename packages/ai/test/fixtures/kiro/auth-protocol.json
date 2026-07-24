@@ -343,9 +343,9 @@
         "method": "POST",
         "endpoint": "<oidc-host>/token",
         "headers": {
-          "content-type": "application/x-www-form-urlencoded"
+          "content-type": "application/json"
         },
-        "formFields": {
+        "jsonFields": {
           "grantType": "refresh_token",
           "refreshToken": "<refresh-token>",
           "clientId": "<client-id>",
