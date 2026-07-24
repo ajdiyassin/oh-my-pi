@@ -1,0 +1,434 @@
+{
+  "fixtureVersion": 0,
+  "scope": "Issue #4 Phase 0 authentication protocol observations",
+  "evidence": "Sanitized endpoint, field, and status metadata only; no request or response bodies are retained.",
+  "privacy": {
+    "synthetic": true,
+    "placeholderConvention": "Values enclosed in angle brackets are semantic markers and MUST NOT be replaced with captured values.",
+    "forbiddenValueKinds": [
+      "access token",
+      "refresh token",
+      "ID token",
+      "API key",
+      "client secret",
+      "authorization code",
+      "device code",
+      "user code",
+      "PKCE verifier or state",
+      "cookie",
+      "email or account identity",
+      "profile ARN",
+      "prompt, response, or tool content",
+      "machine path"
+    ]
+  },
+  "cases": [
+    {
+      "name": "browser_pkce_loopback_callback_and_token_exchange",
+      "flow": "OAuth 2.0 authorization code with PKCE",
+      "provider": "kiro-desktop",
+      "steps": [
+        {
+          "name": "authorization_request",
+          "request": {
+            "method": "GET",
+            "endpoint": "https://auth.{region}.kiro.dev/authorize",
+            "query": {
+              "response_type": "code",
+              "client_id": "<client-id>",
+              "redirect_uri": "<loopback-callback-uri>",
+              "scope": "<requested-scopes>",
+              "state": "<opaque-state>",
+              "code_challenge": "<s256-code-challenge>",
+              "code_challenge_method": "S256"
+            }
+          },
+          "semantics": [
+            "The client creates a loopback callback listener before opening the browser.",
+            "The state value is returned unchanged by the callback and must be checked before exchanging the code.",
+            "The verifier is retained locally and is never sent to the authorization page."
+          ]
+        },
+        {
+          "name": "loopback_callback",
+          "request": {
+            "method": "GET",
+            "endpoint": "<loopback-callback-uri>",
+            "query": {
+              "code": "<authorization-code>",
+              "state": "<opaque-state>"
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "code": "<authorization-code>",
+              "state": "<opaque-state>"
+            }
+          }
+        },
+        {
+          "name": "token_exchange",
+          "request": {
+            "method": "POST",
+            "endpoint": "https://auth.{region}.kiro.dev/oauth/token",
+            "headers": {
+              "content-type": "application/x-www-form-urlencoded"
+            },
+            "formFields": {
+              "grant_type": "authorization_code",
+              "code": "<authorization-code>",
+              "redirect_uri": "<loopback-callback-uri>",
+              "client_id": "<client-id>",
+              "code_verifier": "<pkce-verifier>"
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "accessToken": "<access-token>",
+              "refreshToken": "<refresh-token>",
+              "expiresIn": "<positive-seconds>",
+              "tokenType": "Bearer"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "builder_id_oidc_registration_device_authorization_and_polling",
+      "flow": "AWS OIDC device authorization",
+      "identityProvider": "AWS Builder ID",
+      "endpointTemplate": "https://oidc.{region}.amazonaws.com",
+      "steps": [
+        {
+          "name": "register_client",
+          "request": {
+            "method": "POST",
+            "endpoint": "<oidc-host>/client/register",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "jsonFields": {
+              "clientName": "<synthetic-client-name>",
+              "clientType": "public",
+              "scopes": ["<scope>"],
+              "redirectUris": ["<loopback-callback-uri>"]
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "clientId": "<client-id>",
+              "clientSecret": "<client-secret>",
+              "clientIdIssuedAt": "<unix-seconds>",
+              "clientSecretExpiresAt": "<unix-seconds-or-zero>",
+              "authorizationEndpoint": "<authorization-endpoint>",
+              "tokenEndpoint": "<token-endpoint>"
+            }
+          }
+        },
+        {
+          "name": "device_authorization",
+          "request": {
+            "method": "POST",
+            "endpoint": "<oidc-host>/device_authorization",
+            "headers": {
+              "content-type": "application/x-www-form-urlencoded"
+            },
+            "formFields": {
+              "clientId": "<client-id>",
+              "clientSecret": "<client-secret>",
+              "startUrl": "<builder-id-start-url>"
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "deviceCode": "<device-code>",
+              "userCode": "<user-code>",
+              "verificationUri": "<verification-uri>",
+              "verificationUriComplete": "<verification-uri-with-code>",
+              "expiresIn": "<positive-seconds>",
+              "interval": "<poll-seconds>"
+            }
+          }
+        },
+        {
+          "name": "authorization_pending_poll",
+          "request": {
+            "method": "POST",
+            "endpoint": "<oidc-host>/token",
+            "headers": {
+              "content-type": "application/x-www-form-urlencoded"
+            },
+            "formFields": {
+              "grantType": "urn:ietf:params:oauth:grant-type:device_code",
+              "deviceCode": "<device-code>",
+              "clientId": "<client-id>",
+              "clientSecret": "<client-secret>"
+            }
+          },
+          "response": {
+            "status": 400,
+            "fields": {
+              "error": "authorization_pending",
+              "error_description": "<authorization-pending-description>"
+            },
+            "retryable": true
+          }
+        },
+        {
+          "name": "authorized_poll_success",
+          "response": {
+            "status": 200,
+            "fields": {
+              "accessToken": "<access-token>",
+              "refreshToken": "<refresh-token>",
+              "expiresIn": "<positive-seconds>",
+              "tokenType": "Bearer"
+            },
+            "retryable": false
+          }
+        },
+        {
+          "name": "expired_device_code",
+          "response": {
+            "status": 400,
+            "fields": {
+              "error": "expired_token",
+              "error_description": "<device-code-expired-description>"
+            },
+            "retryable": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "kiro_desktop_google_device_authorization",
+      "flow": "Kiro Desktop device authorization",
+      "identityProvider": "Google",
+      "endpointTemplate": "https://prod.{region}.auth.desktop.kiro.dev",
+      "steps": [
+        {
+          "name": "device_authorization",
+          "request": {
+            "method": "POST",
+            "endpoint": "<desktop-auth-host>/oauth/device/authorization",
+            "jsonFields": {
+              "appId": "<desktop-app-id>",
+              "loginProvider": "Google"
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "deviceCode": "<device-code>",
+              "userCode": "<user-code>",
+              "verificationUri": "<verification-uri>",
+              "verificationUriComplete": "<verification-uri-with-code>",
+              "expiresInMilliseconds": "<positive-milliseconds>",
+              "intervalInMilliseconds": "<poll-milliseconds>",
+              "identityProvider": "Google"
+            }
+          }
+        },
+        {
+          "name": "pending_status",
+          "request": {
+            "method": "POST",
+            "endpoint": "<desktop-auth-host>/oauth/device/poll",
+            "jsonFields": {
+              "deviceCode": "<device-code>",
+              "appId": "<desktop-app-id>"
+            }
+          },
+          "response": {
+            "status": 429,
+            "fields": {
+              "status": "authorization_pending",
+              "statusCode": 429
+            },
+            "retryable": true
+          }
+        },
+        {
+          "name": "success_status",
+          "response": {
+            "status": 200,
+            "fields": {
+              "status": "authorized",
+              "accessToken": "<access-token>",
+              "refreshToken": "<refresh-token>",
+              "expiresIn": "<positive-seconds>",
+              "profileArn": "<profile-arn>"
+            },
+            "retryable": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "kiro_desktop_github_device_authorization",
+      "flow": "Kiro Desktop device authorization",
+      "identityProvider": "GitHub",
+      "endpointTemplate": "https://prod.{region}.auth.desktop.kiro.dev",
+      "steps": [
+        {
+          "name": "device_authorization",
+          "request": {
+            "method": "POST",
+            "endpoint": "<desktop-auth-host>/oauth/device/authorization",
+            "jsonFields": {
+              "appId": "<desktop-app-id>",
+              "loginProvider": "GitHub"
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "deviceCode": "<device-code>",
+              "userCode": "<user-code>",
+              "verificationUri": "<verification-uri>",
+              "expiresInMilliseconds": "<positive-milliseconds>",
+              "intervalInMilliseconds": "<poll-milliseconds>",
+              "identityProvider": "GitHub"
+            }
+          }
+        },
+        {
+          "name": "pending_status",
+          "request": {
+            "method": "POST",
+            "endpoint": "<desktop-auth-host>/oauth/device/poll",
+            "jsonFields": {
+              "deviceCode": "<device-code>",
+              "appId": "<desktop-app-id>"
+            }
+          },
+          "response": {
+            "status": 429,
+            "fields": {
+              "status": "authorization_pending",
+              "statusCode": 429
+            },
+            "retryable": true
+          }
+        },
+        {
+          "name": "success_status",
+          "response": {
+            "status": 200,
+            "fields": {
+              "status": "authorized",
+              "accessToken": "<access-token>",
+              "refreshToken": "<refresh-token>",
+              "expiresIn": "<positive-seconds>",
+              "profileArn": "<profile-arn>"
+            },
+            "retryable": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "iam_identity_center_refresh_requires_client_credentials_and_preserves_profile",
+      "flow": "OIDC refresh token",
+      "identityProvider": "AWS IAM Identity Center",
+      "endpointTemplate": "https://oidc.{region}.amazonaws.com",
+      "selectedProfileBeforeRefresh": {
+        "profileArn": "<profile-arn>",
+        "profileName": "<profile-name>"
+      },
+      "request": {
+        "method": "POST",
+        "endpoint": "<oidc-host>/token",
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "formFields": {
+          "grantType": "refresh_token",
+          "refreshToken": "<refresh-token>",
+          "clientId": "<client-id>",
+          "clientSecret": "<client-secret>"
+        }
+      },
+      "success": {
+        "status": 200,
+        "fields": {
+          "accessToken": "<new-access-token>",
+          "refreshToken": "<new-refresh-token-or-omitted>",
+          "expiresIn": "<positive-seconds>",
+          "tokenType": "Bearer"
+        },
+        "selectedProfileAfterRefresh": {
+          "profileArn": "<profile-arn>",
+          "profileName": "<profile-name>"
+        },
+        "invariant": "Refreshing credentials rotates tokens without replacing the caller's selected profile."
+      },
+      "missing_client_credentials": {
+        "status": 400,
+        "fields": {
+          "error": "invalid_request",
+          "error_description": "<client-credentials-required-description>"
+        },
+        "retryable": false
+      }
+    },
+    {
+      "name": "api_key_model_discovery_us_east_success",
+      "flow": "Kiro API-key bearer model discovery",
+      "region": "us-east-1",
+      "request": {
+        "method": "POST",
+        "endpoint": "https://management.us-east-1.kiro.dev/",
+        "headers": {
+          "authorization": "Bearer <api-key>",
+          "content-type": "application/x-amz-json-1.0",
+          "x-amz-target": "AmazonCodeWhispererService.ListAvailableModels"
+        },
+        "jsonFields": {
+          "origin": "KIRO_CLI"
+        },
+        "forbiddenFields": ["profileArn"]
+      },
+      "response": {
+        "status": 200,
+        "fields": {
+          "models": "<authoritative-model-list>",
+          "defaultModel": "<exact-live-model-id>"
+        },
+        "semantics": "A successful, completely sanitized ListAvailableModels response validates the API-key management route and is authoritative."
+      }
+    },
+    {
+      "name": "api_key_model_discovery_eu_central_typed_failure",
+      "flow": "Kiro API-key bearer model discovery",
+      "region": "eu-central-1",
+      "request": {
+        "method": "POST",
+        "endpoint": "https://management.eu-central-1.kiro.dev/",
+        "headers": {
+          "authorization": "Bearer <api-key>",
+          "content-type": "application/x-amz-json-1.0",
+          "x-amz-target": "AmazonCodeWhispererService.ListAvailableModels"
+        },
+        "jsonFields": {
+          "origin": "KIRO_CLI"
+        },
+        "forbiddenFields": ["profileArn"]
+      },
+      "response": {
+        "status": 400,
+        "fields": {
+          "error": "invalid_request",
+          "reason": "<typed-region-error>",
+          "message": "<typed-error-message>"
+        },
+        "retryable": false,
+        "semantics": "The captured typed regional failure is negative route evidence, not successful discovery and not proof that the bearer is expired."
+      }
+    }
+  ]
+}
