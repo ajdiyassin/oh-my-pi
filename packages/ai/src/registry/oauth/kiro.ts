@@ -354,7 +354,6 @@ export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDev
 					clientName: config.clientName ?? "oh-my-pi",
 					clientType: "public",
 					scopes: config.scopes ?? [],
-					redirectUris: [],
 				}),
 			},
 			{ fetch: ctrl.fetch, signal: ctrl.signal },
@@ -371,8 +370,8 @@ export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDev
 		clientSecret = requiredString(registration.clientSecret, "clientSecret");
 		tokenUrl = typeof registration.tokenEndpoint === "string" ? registration.tokenEndpoint : `${host}/token`;
 		authorizationUrl = `${host}/device_authorization`;
-		authorizationHeaders = { "content-type": "application/x-www-form-urlencoded" };
-		authorizationBody = new URLSearchParams({
+		authorizationHeaders = { "content-type": "application/json" };
+		authorizationBody = JSON.stringify({
 			clientId,
 			clientSecret,
 			startUrl: config.startUrl ?? "https://view.awsapps.com/start",
@@ -421,8 +420,8 @@ export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDev
 			config.kind === "builder-id"
 				? {
 						method: "POST",
-						headers: { "content-type": "application/x-www-form-urlencoded" },
-						body: new URLSearchParams({
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
 							grantType: "urn:ietf:params:oauth:grant-type:device_code",
 							deviceCode,
 							clientId: clientId!,
@@ -508,8 +507,8 @@ export async function refreshKiroToken(
 				provider: PROVIDER,
 			});
 		}
-		headers = { "content-type": "application/x-www-form-urlencoded" };
-		body = new URLSearchParams({
+		headers = { "content-type": "application/json" };
+		body = JSON.stringify({
 			grantType: "refresh_token",
 			refreshToken: current.refresh,
 			clientId: current.kiroClientId,
