@@ -1,0 +1,32 @@
+{
+  "format": "amazon-eventstream",
+  "construction": "independent-python-struct-zlib",
+  "sequences": {
+    "normal": {
+      "frameCount": 4,
+      "base64": "AAAAhQAAAFaeLBRKDTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcAEGluaXRpYWwtcmVzcG9uc2UNOmNvbnRlbnQtdHlwZQcAEGFwcGxpY2F0aW9uL2pzb257InJlcXVlc3RJZCI6ImZpeHR1cmUtcmVxdWVzdCJ9Zz9TYAAAAIcAAABbml07lw06bWVzc2FnZS10eXBlBwAFZXZlbnQLOmV2ZW50LXR5cGUHABVyZWFzb25pbmdDb250ZW50RXZlbnQNOmNvbnRlbnQtdHlwZQcAEGFwcGxpY2F0aW9uL2pzb257InRleHQiOiI8cmVhc29uaW5nLWRlbHRhPiJ9XlPVPwAAAKMAAABcMHgn8A06bWVzc2FnZS10eXBlBwAFZXZlbnQLOmV2ZW50LXR5cGUHABZhc3Npc3RhbnRSZXNwb25zZUV2ZW50DTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJjb250ZW50IjoiPGFzc2lzdGFudC1kZWx0YT4iLCJzdG9wUmVhc29uIjoiRU5EX1RVUk4ifVyG3ZEAAACGAAAAV66LXgwNOm1lc3NhZ2UtdHlwZQcABWV2ZW50CzpldmVudC10eXBlBwARY29udGV4dFVzYWdlRXZlbnQNOmNvbnRlbnQtdHlwZQcAEGFwcGxpY2F0aW9uL2pzb257ImNvbnRleHRVc2FnZVBlcmNlbnRhZ2UiOjEyLjV9uq2xdg==",
+      "eventTypes": [
+        "initial-response",
+        "reasoningContentEvent",
+        "assistantResponseEvent",
+        "contextUsageEvent"
+      ]
+    },
+    "metrics": {
+      "frameCount": 3,
+      "base64": "AAAAggAAAFNcZjzVDTptZXNzYWdlLXR5cGUHAAVldmVudAs6ZXZlbnQtdHlwZQcADW1ldGFkYXRhRXZlbnQNOmNvbnRlbnQtdHlwZQcAEGFwcGxpY2F0aW9uL2pzb257InJlcXVlc3RJZCI6ImZpeHR1cmUtcmVxdWVzdCJ9tgQppgAAAHYAAABT4dLKSA06bWVzc2FnZS10eXBlBwAFZXZlbnQLOmV2ZW50LXR5cGUHAA1tZXRlcmluZ0V2ZW50DTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJtZXRlcmluZ1VuaXRzIjoxfdkHBd8AAADFAAAAUsGyiBoNOm1lc3NhZ2UtdHlwZQcABWV2ZW50CzpldmVudC10eXBlBwAMbWV0cmljc0V2ZW50DTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29ueyJpbnB1dFRva2VucyI6MTAsIm91dHB1dFRva2VucyI6NCwiY2FjaGVSZWFkVG9rZW5zIjoyLCJjYWNoZUNyZWF0aW9uVG9rZW5zIjoxLCJyZWFzb25pbmdUb2tlbnMiOjF9st0WhQ==",
+      "eventTypes": [
+        "metadataEvent",
+        "meteringEvent",
+        "metricsEvent"
+      ]
+    },
+    "exception": {
+      "frameCount": 1,
+      "base64": "AAAA1wAAAGFkQi3uDTptZXNzYWdlLXR5cGUHAAlleGNlcHRpb24POmV4Y2VwdGlvbi10eXBlBwATdmFsaWRhdGlvbkV4Y2VwdGlvbg06Y29udGVudC10eXBlBwAQYXBwbGljYXRpb24vanNvbnsiY29kZSI6IlJFUVVFU1RfQk9EWV9JTlZBTElEIiwibWVzc2FnZSI6IjxzYW5pdGl6ZWQtcHJvdmlkZXItbWVzc2FnZT4iLCJyZXF1ZXN0SWQiOiJmaXh0dXJlLXJlcXVlc3QifWNumUM=",
+      "messageType": "exception",
+      "exceptionType": "validationException",
+      "provenance": "synthetic-decoder-oracle"
+    }
+  }
+}
