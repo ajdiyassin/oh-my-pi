@@ -383,7 +383,7 @@
         "method": "POST",
         "endpoint": "https://management.us-east-1.kiro.dev/",
         "headers": {
-          "authorization": "Bearer <api-key>",
+          "authorization": "<api-key-authorization>",
           "content-type": "application/x-amz-json-1.0",
           "x-amz-target": "AmazonCodeWhispererService.ListAvailableModels"
         },
@@ -409,7 +409,7 @@
         "method": "POST",
         "endpoint": "https://management.eu-central-1.kiro.dev/",
         "headers": {
-          "authorization": "Bearer <api-key>",
+          "authorization": "<api-key-authorization>",
           "content-type": "application/x-amz-json-1.0",
           "x-amz-target": "AmazonCodeWhispererService.ListAvailableModels"
         },
