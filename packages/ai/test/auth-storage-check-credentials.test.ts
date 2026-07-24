@@ -371,6 +371,57 @@ describe("AuthStorage.checkCredentials", () => {
 		}
 	});
 
+	it("preserves Kiro registered-client state through health refresh", async () => {
+		const row: StoredAuthCredential = {
+			id: 18,
+			provider: "kiro",
+			credential: {
+				type: "oauth",
+				access: "kiro-old",
+				refresh: "kiro-refresh",
+				expires: Date.now() - 60_000,
+				orgId: "arn:aws:codewhisperer:us-east-1:111122223333:profile/example",
+				kiroClientId: "client",
+				kiroClientSecret: "secret",
+				kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				kiroAuthMethod: "builder-id",
+			},
+			disabledCause: null,
+		};
+		const refreshSpy = vi.fn<NonNullable<AuthCredentialStore["refreshOAuthCredential"]>>(
+			async (_provider, _id, credential) => {
+				expect(credential).toMatchObject({
+					kiroClientId: "client",
+					kiroClientSecret: "secret",
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+					kiroAuthMethod: "builder-id",
+				});
+				return { access: "kiro-new", refresh: "kiro-rotated", expires: Date.now() + 3_600_000 };
+			},
+		);
+		const store = makeStore([row], refreshSpy);
+		const updatedCredentials: AuthCredential[] = [];
+		vi.spyOn(store, "updateAuthCredential").mockImplementation((_id, credential) =>
+			updatedCredentials.push(credential),
+		);
+		const storage = new AuthStorage(store, { usageProviderResolver: () => undefined });
+		await storage.reload();
+		try {
+			await storage.checkCredentials();
+			expect(refreshSpy).toHaveBeenCalledTimes(1);
+			expect(updatedCredentials[0]).toMatchObject({
+				type: "oauth",
+				access: "kiro-new",
+				kiroClientId: "client",
+				kiroClientSecret: "secret",
+				kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				kiroAuthMethod: "builder-id",
+			});
+		} finally {
+			storage.close();
+		}
+	});
+
 	it("runs the completionProbe even when no usage probe is configured for the provider", async () => {
 		const apiKeyRow: StoredAuthCredential = {
 			id: 11,

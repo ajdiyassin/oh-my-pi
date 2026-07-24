@@ -9,7 +9,7 @@
  * (default model, model-manager factory, catalog discovery) lives in
  * `@oh-my-pi/pi-catalog`'s descriptor table.
  */
-import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
+import type { CredentialPolicy, OAuthCredentials, OAuthLoginCallbacks, ProviderLoginResult } from "./oauth/types";
 
 /**
  * API-key environment fallback: either a single env var name (e.g.
@@ -43,11 +43,13 @@ export interface ProviderDefinition {
 	// --- env-var fallback (the catalog table's `envVars` supplies plain names; set this only for computed resolvers) ---
 	readonly envKeys?: KeyResolver;
 	// --- interactive login (OAuthProviderInterface-compatible) ---
-	readonly login?: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials | string>;
+	readonly login?: (callbacks: OAuthLoginCallbacks) => Promise<ProviderLoginResult>;
 	readonly refreshToken?: (credentials: OAuthCredentials) => Promise<OAuthCredentials>;
 	readonly getApiKey?: (credentials: OAuthCredentials) => string;
 	/** Store OAuth credentials under a different provider id (e.g. `openai-codex-device` ⇒ `openai-codex`). */
 	readonly storeCredentialsAs?: string;
+	/** Whether a successful login appends to or replaces the provider's credential pool. Defaults to append. */
+	readonly credentialPolicy?: CredentialPolicy;
 	// --- coding-agent login UX ---
 	/** Auth-broker local callback-server port. Presence ⇒ entry in `CALLBACK_PORTS`. */
 	readonly callbackPort?: number;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the unreachable native Kiro authentication leaf with API-key route validation, browser/device OAuth, profile selection, refresh-state persistence, and broker-safe credential redaction for the later activation phase ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
 ### Changed
 
 - Hardened the shared Amazon EventStream decoder with bounded frames, headers, and retained buffers plus strict malformed-header handling for Kiro and Bedrock streams ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).

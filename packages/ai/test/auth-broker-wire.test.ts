@@ -91,6 +91,72 @@ describe("auth-broker wire surface", () => {
 		}
 	});
 
+	test("API-key endpoint survives broker upload and snapshot", async () => {
+		const apiEndpoint = "https://api.example.test/v1";
+		const upload = await fetch(`${handle!.url}/v1/credential`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				provider: "custom-openai",
+				credential: { type: "api_key", key: "secret-key", apiEndpoint },
+			}),
+		});
+		expect(upload.status).toBe(200);
+		const uploadBody = (await upload.json()) as {
+			entries: Array<{ credential: { type: string; apiEndpoint?: string } }>;
+		};
+		expect(uploadBody.entries[0].credential.apiEndpoint).toBe(apiEndpoint);
+
+		const snapshotResult = await new AuthBrokerClient({ url: handle!.url, token }).fetchSnapshot();
+		if (snapshotResult.status !== 200) throw new Error("expected snapshot");
+		const entry = snapshotResult.snapshot.credentials.find(candidate => candidate.provider === "custom-openai");
+		expect(entry?.credential).toMatchObject({ type: "api_key", apiEndpoint });
+	});
+
+	test("Kiro broker responses retain routing fields without registered-client secret", async () => {
+		const upload = await fetch(`${handle!.url}/v1/credential`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: JSON.stringify({
+				provider: "kiro",
+				credential: {
+					type: "oauth",
+					access: "kiro-access",
+					refresh: "kiro-refresh",
+					expires: Date.now() + 60_000,
+					kiroClientId: "registered-client-id",
+					kiroClientSecret: "registered-client-secret",
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+					kiroAuthMethod: "builder-id",
+					orgId: "arn:aws:codewhisperer:us-east-1:111122223333:profile/example",
+					orgName: "Example profile",
+				},
+			}),
+		});
+		expect(upload.status).toBe(200);
+		const uploadBody = (await upload.json()) as { entries: Array<{ credential: Record<string, unknown> }> };
+		expect(uploadBody.entries[0]?.credential).not.toHaveProperty("kiroClientSecret");
+		expect(JSON.stringify(uploadBody)).not.toContain("registered-client-secret");
+
+		const snapshotResult = await new AuthBrokerClient({ url: handle!.url, token }).fetchSnapshot();
+		if (snapshotResult.status !== 200) throw new Error("expected snapshot");
+		const entry = snapshotResult.snapshot.credentials.find(candidate => candidate.provider === "kiro");
+		expect(entry?.credential).toMatchObject({
+			type: "oauth",
+			refresh: REMOTE_REFRESH_SENTINEL,
+			kiroClientId: "registered-client-id",
+			kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+			kiroAuthMethod: "builder-id",
+			orgId: "arn:aws:codewhisperer:us-east-1:111122223333:profile/example",
+			orgName: "Example profile",
+		});
+		expect(entry?.credential).not.toHaveProperty("kiroClientSecret");
+		expect(JSON.stringify(entry?.credential)).not.toContain("registered-client-secret");
+	});
+
 	test("GET /v1/snapshot returns generation headers and 304 for unchanged long-poll", async () => {
 		const res = await fetch(`${handle!.url}/v1/snapshot`, {
 			headers: { Authorization: `Bearer ${token}` },

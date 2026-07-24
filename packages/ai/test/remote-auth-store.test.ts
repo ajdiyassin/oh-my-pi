@@ -1275,3 +1275,65 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		}
 	});
 });
+
+test("failed remote replacement resyncs partially disabled credentials before throwing", async () => {
+	const brokerClient = new AuthBrokerClient({ url: "http://127.0.0.1:9", token: "unused" });
+	const first = {
+		id: 11,
+		provider: "kiro",
+		credential: { type: "api_key" as const, key: "old-a" },
+		identityKey: null,
+		rotatesInMs: null,
+	};
+	const second = {
+		id: 12,
+		provider: "kiro",
+		credential: { type: "api_key" as const, key: "old-b" },
+		identityKey: null,
+		rotatesInMs: null,
+	};
+	const initialSnapshot: SnapshotResponse = {
+		generation: 1,
+		generatedAt: 1,
+		serverNowMs: 1,
+		refresher: { enabled: false, intervalMs: 0, skewMs: 0, nextSweepInMs: Number.MAX_SAFE_INTEGER },
+		credentials: [first, second],
+	};
+	const authoritativeSnapshot: SnapshotResponse = {
+		...initialSnapshot,
+		generation: 2,
+		credentials: [second],
+	};
+	const disableSpy = vi
+		.spyOn(brokerClient, "disableCredential")
+		.mockResolvedValueOnce({ ok: true })
+		.mockRejectedValueOnce(new Error("disable failed"));
+	const backgroundFetch = Promise.withResolvers<FetchSnapshotResult>();
+	const fetchSpy = vi
+		.spyOn(brokerClient, "fetchSnapshot")
+		.mockImplementationOnce(() => backgroundFetch.promise)
+		.mockResolvedValue({
+			status: 200,
+			snapshot: authoritativeSnapshot,
+			generation: authoritativeSnapshot.generation,
+		});
+	const uploadSpy = vi.spyOn(brokerClient, "uploadCredential");
+	const remoteStore = new RemoteAuthCredentialStore({
+		client: brokerClient,
+		initialSnapshot,
+		streamSnapshots: false,
+	});
+
+	try {
+		await expect(remoteStore.replaceAuthCredentialsRemote("kiro", [{ type: "api_key", key: "new" }])).rejects.toThrow(
+			"disable failed",
+		);
+		expect(disableSpy).toHaveBeenCalledTimes(2);
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(uploadSpy).not.toHaveBeenCalled();
+		expect(remoteStore.listAuthCredentials("kiro").map(entry => entry.id)).toEqual([second.id]);
+	} finally {
+		remoteStore.close();
+		backgroundFetch.reject(new Error("store closed"));
+	}
+});
