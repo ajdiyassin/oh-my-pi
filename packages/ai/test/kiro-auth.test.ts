@@ -141,6 +141,62 @@ describe("isolated Kiro authentication", () => {
 		);
 	});
 
+	it("matches the captured Builder ID device request bodies", async () => {
+		const requests: Array<{ url: string; contentType: string | null; body: unknown }> = [];
+		const responses = [
+			json({
+				clientId: "client",
+				clientSecret: "secret",
+				tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+			}),
+			json({
+				deviceCode: "device",
+				userCode: "user",
+				verificationUri: "https://example.test",
+				expiresIn: 60,
+				interval: 1,
+			}),
+			json({ accessToken: "access", refreshToken: "refresh", expiresIn: 3600 }),
+			json({ profiles: [{ arn: profileArn, profileName: "Example" }] }),
+		];
+		const loggedIn = await loginKiroDevice(
+			{
+				onAuth: () => {},
+				onPrompt: async () => "",
+				fetch: async (input, init) => {
+					const contentType = new Headers(init?.headers).get("content-type");
+					requests.push({ url: String(input), contentType, body: JSON.parse(String(init?.body)) as unknown });
+					return responses.shift()!;
+				},
+			},
+			{ kind: "builder-id", region: "us-east-1", scopes: ["scope"], pollIntervalMs: 1 },
+		);
+
+		expect(requests.slice(0, 3)).toEqual([
+			{
+				url: "https://oidc.us-east-1.amazonaws.com/client/register",
+				contentType: "application/json",
+				body: { clientName: "oh-my-pi", clientType: "public", scopes: ["scope"] },
+			},
+			{
+				url: "https://oidc.us-east-1.amazonaws.com/device_authorization",
+				contentType: "application/json",
+				body: { clientId: "client", clientSecret: "secret", startUrl: "https://view.awsapps.com/start" },
+			},
+			{
+				url: "https://oidc.us-east-1.amazonaws.com/token",
+				contentType: "application/json",
+				body: {
+					grantType: "urn:ietf:params:oauth:grant-type:device_code",
+					deviceCode: "device",
+					clientId: "client",
+					clientSecret: "secret",
+				},
+			},
+		]);
+		expect(loggedIn).toMatchObject({ orgId: profileArn, kiroAuthMethod: "builder-id" });
+	});
+
 	it("completes, rejects, cancels, and bounds desktop device polling", async () => {
 		const responses = [
 			json({
@@ -208,8 +264,13 @@ describe("isolated Kiro authentication", () => {
 					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
 					kiroAuthMethod: "builder-id" as const,
 				},
-				contentType: "application/x-www-form-urlencoded",
-				body: "grantType=refresh_token&refreshToken=refresh&clientId=client&clientSecret=secret",
+				contentType: "application/json",
+				body: JSON.stringify({
+					grantType: "refresh_token",
+					refreshToken: "refresh",
+					clientId: "client",
+					clientSecret: "secret",
+				}),
 			},
 			{
 				credential: {
