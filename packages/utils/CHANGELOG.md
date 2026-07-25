@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a shared bounded strict-UTF-8 JSON response reader for provider integrations.
+
 ## [17.0.9] - 2026-07-23
 
 ### Breaking Changes

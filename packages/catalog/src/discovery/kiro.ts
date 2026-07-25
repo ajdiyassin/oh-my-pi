@@ -2,6 +2,7 @@
  * Kiro management discovery: bounded AWS JSON 1.0 client, fail-closed
  * sanitizer (additive unknowns tolerated), and schema-derived ModelSpec map.
  */
+import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
 import { Effort } from "../effort";
 import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
 import { discoveryFetch } from "../utils";
@@ -32,6 +33,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const SAFE_SCHEMA_PROPERTY = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const FORBIDDEN_PROPERTY_NAME =
 	/(authorization|cookie|secret|access_?token|refresh_?token|profile|account|email|user|arn)/i;
+const PROTOTYPE_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 
 export type KiroDiscoveryCredential =
 	| { type: "api_key"; token: string; apiEndpoint?: string }
@@ -134,6 +136,18 @@ function safeId(value: unknown, code: string): string {
 	return id;
 }
 
+function safeSchemaProperty(value: unknown, code: string): string {
+	const property = boundedString(value, code, 64);
+	if (
+		!SAFE_SCHEMA_PROPERTY.test(property) ||
+		FORBIDDEN_PROPERTY_NAME.test(property) ||
+		PROTOTYPE_PROPERTY_NAMES.has(property)
+	) {
+		failSanitize(code);
+	}
+	return property;
+}
+
 function positiveInteger(value: unknown, code: string): number {
 	if (!Number.isSafeInteger(value) || (value as number) <= 0) failSanitize(code);
 	return value as number;
@@ -175,22 +189,16 @@ function sanitizeJsonSchema(value: unknown, depth = 0): SanitizedJsonSchema {
 	if (raw.required !== undefined) {
 		if (!Array.isArray(raw.required) || raw.required.length > 32) failSanitize("schema.required");
 		result.required = raw.required.map(entry => {
-			const property = boundedString(entry, "schema.required-value", 64);
-			if (!SAFE_SCHEMA_PROPERTY.test(property) || FORBIDDEN_PROPERTY_NAME.test(property)) {
-				failSanitize("schema.required-value");
-			}
-			return property;
+			return safeSchemaProperty(entry, "schema.required-value");
 		});
 	}
 	if (raw.properties !== undefined) {
 		const properties = record(raw.properties, "schema.properties");
 		if (Object.keys(properties).length > 32) failSanitize("schema.properties-count");
-		result.properties = {};
+		result.properties = Object.create(null) as Record<string, SanitizedJsonSchema>;
 		for (const [property, schema] of Object.entries(properties)) {
-			if (!SAFE_SCHEMA_PROPERTY.test(property) || FORBIDDEN_PROPERTY_NAME.test(property)) {
-				failSanitize("schema.property-name");
-			}
-			result.properties[property] = sanitizeJsonSchema(schema, depth + 1);
+			const safeProperty = safeSchemaProperty(property, "schema.property-name");
+			result.properties[safeProperty] = sanitizeJsonSchema(schema, depth + 1);
 		}
 	}
 	if (raw.items !== undefined) result.items = sanitizeJsonSchema(raw.items, depth + 1);
@@ -217,6 +225,9 @@ function sanitizeModel(value: unknown): SanitizedKiroModel {
 	});
 	if (new Set(supportedInputModalities).size !== supportedInputModalities.length)
 		failSanitize("model.input-duplicate");
+	if (!Array.isArray(raw.supportedOutputModalities) || !raw.supportedOutputModalities.includes("TEXT")) {
+		failSanitize("model.output-modalities");
+	}
 
 	const rawLimits = record(raw.tokenLimits, "model.token-limits");
 	const model: SanitizedKiroModel = {
@@ -477,41 +488,6 @@ export function mapKiroModelCatalog(
 	return catalog.models.map(model => mapKiroModel(model, runtimeBaseUrl));
 }
 
-async function readBoundedJson(response: Response, operation: string, maxBytes: number): Promise<unknown> {
-	const contentLength = response.headers.get("content-length");
-	if (contentLength && Number(contentLength) > maxBytes) {
-		throw new Error(`${operation}: invalid response size`);
-	}
-	const reader = response.body?.getReader();
-	if (!reader) throw new Error(`${operation}: missing response body`);
-
-	const chunks: Uint8Array[] = [];
-	let totalBytes = 0;
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		totalBytes += value.byteLength;
-		if (totalBytes > maxBytes) {
-			await reader.cancel().catch(() => {});
-			throw new Error(`${operation}: invalid response size`);
-		}
-		chunks.push(value);
-	}
-	if (totalBytes === 0) throw new Error(`${operation}: invalid response size`);
-
-	const bytes = new Uint8Array(totalBytes);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	try {
-		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
-	} catch {
-		throw new Error(`${operation}: invalid JSON`);
-	}
-}
-
 function combineSignals(signals: AbortSignal[]): AbortSignal {
 	return signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
 }
@@ -549,7 +525,18 @@ export async function kiroManagementRequest(options: KiroManagementRequestOption
 			signal,
 		});
 		if (!response.ok) throw new Error(`${options.target}: HTTP ${response.status}`);
-		return await readBoundedJson(response, options.target, maxBytes);
+		try {
+			return await readBoundedJson(response, maxBytes);
+		} catch (cause) {
+			if (!(cause instanceof BoundedJsonReadError)) throw cause;
+			const detail =
+				cause.kind === "size" || cause.kind === "empty-body"
+					? "invalid response size"
+					: cause.kind === "missing-body"
+						? "missing response body"
+						: "invalid JSON";
+			throw new Error(`${options.target}: ${detail}`, { cause });
+		}
 	} finally {
 		clearTimeout(timer);
 	}

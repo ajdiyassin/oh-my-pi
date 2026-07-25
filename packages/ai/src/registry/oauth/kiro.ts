@@ -12,6 +12,7 @@ import {
 	resolveKiroApiRegion,
 	validateKiroApiRegion,
 } from "@oh-my-pi/pi-catalog/wire/kiro";
+import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
 import * as AIError from "../../error";
 import { OAuthCallbackFlow } from "./callback-server";
 import { pollOAuthDeviceCodeFlow } from "./device-code";
@@ -90,38 +91,6 @@ function registeredClientExpiry(value: unknown): number | undefined {
 	return value === 0 ? 0 : (value as number) * 1000;
 }
 
-async function boundedJson(response: Response): Promise<unknown> {
-	const contentLength = response.headers.get("content-length");
-	if (contentLength && Number(contentLength) > MAX_RESPONSE_BYTES) {
-		throw new AIError.OAuthError("Kiro response exceeded size limit", { kind: "validation", provider: PROVIDER });
-	}
-	const reader = response.body?.getReader();
-	if (!reader) throw new AIError.OAuthError("Kiro response has no body", { kind: "validation", provider: PROVIDER });
-	const chunks: Uint8Array[] = [];
-	let totalBytes = 0;
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		totalBytes += value.byteLength;
-		if (totalBytes > MAX_RESPONSE_BYTES) {
-			await reader.cancel().catch(() => {});
-			throw new AIError.OAuthError("Kiro response exceeded size limit", { kind: "validation", provider: PROVIDER });
-		}
-		chunks.push(value);
-	}
-	const bytes = new Uint8Array(totalBytes);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	try {
-		return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-	} catch (cause) {
-		throw new AIError.OAuthError("Kiro returned invalid JSON", { kind: "validation", provider: PROVIDER, cause });
-	}
-}
-
 async function request(
 	url: string,
 	init: RequestInit,
@@ -133,12 +102,21 @@ async function request(
 	const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
 	try {
 		const response = await (options.fetch ?? fetch)(url, { ...init, signal });
-		const body = await boundedJson(response);
+		const body = await readBoundedJson(response, MAX_RESPONSE_BYTES);
 		return { response, body };
 	} catch (cause) {
 		if (options.signal?.aborted) throw new AIError.LoginCancelledError();
 		if (timeout.aborted)
 			throw new AIError.OAuthError("Kiro request timed out", { kind: "timeout", provider: PROVIDER, cause });
+		if (cause instanceof BoundedJsonReadError) {
+			const message =
+				cause.kind === "size"
+					? "Kiro response exceeded size limit"
+					: cause.kind === "missing-body"
+						? "Kiro response has no body"
+						: "Kiro returned invalid JSON";
+			throw new AIError.OAuthError(message, { kind: "validation", provider: PROVIDER, cause });
+		}
 		if (cause instanceof AIError.OAuthError) throw cause;
 		throw new AIError.OAuthError("Kiro request failed", { kind, provider: PROVIDER, cause });
 	}
@@ -234,6 +212,16 @@ export async function validateKiroApiKey(
 	return { type: "api_key", key: token, apiEndpoint: result.route.runtimeBaseUrl };
 }
 
+/**
+ * Label a profile for the selection prompt without echoing its ARN: the ARN
+ * embeds the AWS account id, which must never reach the terminal or logs.
+ */
+function profileLabel(profile: KiroProfileSummary, index: number): string {
+	if (profile.profileName) return `${index + 1}. ${profile.profileName}`;
+	const region = parseKiroProfileArn(profile.arn)?.apiRegion;
+	return `${index + 1}. ${region ? `profile in ${region}` : "unnamed profile"}`;
+}
+
 export async function selectKiroProfile(
 	token: string,
 	apiRegion: string,
@@ -256,8 +244,9 @@ export async function selectKiroProfile(
 	let selected = profiles[0]!;
 	if (profiles.length > 1) {
 		if (!options.onPrompt) throw new AIError.OnPromptRequiredError("Kiro profile selection");
+		const choices = profiles.map((profile, index) => profileLabel(profile, index)).join("\n");
 		const answer = await options.onPrompt({
-			message: `Select a Kiro profile (1-${profiles.length})`,
+			message: `Select a Kiro profile:\n${choices}`,
 			placeholder: "1",
 		});
 		const index = Number.parseInt(answer.trim(), 10) - 1;
@@ -277,26 +266,26 @@ function base64Url(bytes: Uint8Array): string {
 }
 
 class KiroBrowserFlow extends OAuthCallbackFlow {
-	readonly config: KiroBrowserConfig;
-	verifier = "";
+	readonly #config: KiroBrowserConfig;
+	#verifier = "";
 
 	constructor(ctrl: OAuthController, config: KiroBrowserConfig) {
 		super(ctrl, { preferredPort: config.preferredPort, manualInputOnly: config.manualInputOnly });
-		this.config = config;
+		this.#config = config;
 	}
 
 	async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string }> {
 		const verifierBytes = crypto.getRandomValues(new Uint8Array(32));
-		this.verifier = base64Url(verifierBytes);
+		this.#verifier = base64Url(verifierBytes);
 		const challenge = base64Url(
-			new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(this.verifier))),
+			new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(this.#verifier))),
 		);
-		const url = new URL(`https://auth.${this.config.region}.kiro.dev/authorize`);
+		const url = new URL(`https://auth.${this.#config.region}.kiro.dev/authorize`);
 		url.search = new URLSearchParams({
 			response_type: "code",
-			client_id: this.config.clientId,
+			client_id: this.#config.clientId,
 			redirect_uri: redirectUri,
-			scope: this.config.scopes.join(" "),
+			scope: this.#config.scopes.join(" "),
 			state,
 			code_challenge: challenge,
 			code_challenge_method: "S256",
@@ -305,19 +294,19 @@ class KiroBrowserFlow extends OAuthCallbackFlow {
 	}
 
 	async exchangeToken(code: string, _state: string, redirectUri: string): Promise<OAuthCredentials> {
-		const verifier = this.verifier;
-		this.verifier = "";
+		const verifier = this.#verifier;
+		this.#verifier = "";
 		if (!verifier)
 			throw new AIError.OAuthError("Kiro PKCE verifier was already consumed", {
 				kind: "validation",
 				provider: PROVIDER,
 			});
-		const tokenEndpoint = `https://auth.${this.config.region}.kiro.dev/oauth/token`;
+		const tokenEndpoint = `https://auth.${this.#config.region}.kiro.dev/oauth/token`;
 		const body = new URLSearchParams({
 			grant_type: "authorization_code",
 			code,
 			redirect_uri: redirectUri,
-			client_id: this.config.clientId,
+			client_id: this.#config.clientId,
 			code_verifier: verifier,
 		});
 		const result = await request(
@@ -333,14 +322,14 @@ class KiroBrowserFlow extends OAuthCallbackFlow {
 				status: result.response.status,
 			});
 		const resultCredentials = credentials(result.body);
-		const selected = await selectKiroProfile(resultCredentials.access, resolveKiroApiRegion(this.config.region), {
+		const selected = await selectKiroProfile(resultCredentials.access, resolveKiroApiRegion(this.#config.region), {
 			fetch: this.ctrl.fetch,
 			signal: this.ctrl.signal,
 			onPrompt: this.ctrl.onPrompt,
 		});
 		return {
 			...resultCredentials,
-			kiroClientId: this.config.clientId,
+			kiroClientId: this.#config.clientId,
 			kiroTokenEndpoint: tokenEndpoint,
 			kiroAuthMethod: "browser",
 			orgId: selected.profileArn,

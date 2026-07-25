@@ -217,15 +217,25 @@ function bigIntFromBytes(b: Uint8Array): bigint {
  * boundaries: messages may span multiple chunks, and a single chunk may carry
  * many messages.
  */
-export async function* decodeEventStream(source: ReadableStream<Uint8Array>): AsyncGenerator<EventStreamMessage> {
+export async function* decodeEventStream(
+	source: ReadableStream<Uint8Array>,
+	signal?: AbortSignal,
+): AsyncGenerator<EventStreamMessage> {
 	const reader = source.getReader();
+	const cancelOnAbort = (): void => {
+		void reader.cancel(signal?.reason).catch(() => {});
+	};
+	if (signal?.aborted) cancelOnAbort();
+	else signal?.addEventListener("abort", cancelOnAbort, { once: true });
 	// Single growable buffer; we slide a read cursor along it and compact when a
 	// complete prefix has been consumed. Avoids per-message Uint8Array copies.
 	let buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
 	let completed = false;
 	try {
 		while (true) {
+			signal?.throwIfAborted();
 			const { value, done } = await reader.read();
+			signal?.throwIfAborted();
 			if (value && value.length > 0) buf = buf.length === 0 ? value : Buffer.concat([buf, value]);
 			let offset = 0;
 			while (buf.length - offset >= 4) {
@@ -255,6 +265,7 @@ export async function* decodeEventStream(source: ReadableStream<Uint8Array>): As
 		if (buf.length > 0) throw new EventStreamFrameError("truncated message at end of stream");
 		completed = true;
 	} finally {
+		signal?.removeEventListener("abort", cancelOnAbort);
 		// On abnormal exit (consumer threw/broke, decode error) cancel the body so the
 		// HTTP connection is released instead of draining until GC.
 		if (!completed) await reader.cancel().catch(() => {});

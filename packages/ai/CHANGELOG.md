@@ -6,6 +6,7 @@
 
 - Added the unreachable native Kiro authentication leaf with API-key route validation, browser/device OAuth, profile selection, refresh-state persistence, and broker-safe credential redaction for the later activation phase ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 - Added privacy-safe Kiro Phase 0 protocol fixtures and independent Amazon EventStream replay coverage for native provider development ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added the unreachable native Kiro runtime leaf with capture-derived request transforms, adaptive reasoning, decoded EventStream normalization, per-ID tool assembly, typed errors, isolated pre-output recovery, provider hooks, response timing, and usage metrics ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ### Changed
 
