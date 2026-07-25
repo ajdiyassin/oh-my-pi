@@ -13,6 +13,7 @@ import type {
 	OAuthProviderInterface,
 } from "./types";
 
+export * from "./anthropic";
 export * from "./device-code";
 export type * from "./types";
 

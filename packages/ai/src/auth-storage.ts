@@ -191,6 +191,28 @@ export interface StoredCredentialBlock {
 }
 
 /**
+ * Identity slice of a disabled (soft-deleted) credential tombstone — cause and
+ * account identity only, never token material. Surfaced so auto-disabled
+ * accounts (e.g. an expired Anthropic OAuth grant) stay visible in `omp usage`
+ * instead of silently vanishing until the user notices missing quota.
+ */
+export interface DisabledCredentialSummary {
+	/** Database row id (matches {@link StoredAuthCredential.id}). */
+	id: number;
+	provider: string;
+	type: AuthCredential["type"];
+	email?: string;
+	accountId?: string;
+	/** Organization/workspace the credential was scoped to (Anthropic/ChatGPT multi-subscription). */
+	orgId?: string;
+	orgName?: string;
+	/** Verbatim disable cause captured when the row was torn down. */
+	cause: string;
+	/** Epoch ms the row was disabled (SQLite `updated_at`), when known. */
+	disabledAtMs?: number;
+}
+
+/**
  * Per-credential health record returned by {@link AuthStorage.checkCredentials}.
  *
  * Use this to identify which credential in a multi-account pool is causing
@@ -373,6 +395,21 @@ export interface AuthCredentialStore {
 	/** Optional hook to notify the underlying store that usage report cache is stale. */
 	invalidateUsageCache?(signal?: AbortSignal): Promise<void>;
 	listAuthCredentials(provider?: string): StoredAuthCredential[];
+	/**
+	 * Optional store hook to re-hydrate the credential snapshot from its
+	 * backing source. Remote broker stores re-fetch `GET /v1/snapshot` so a
+	 * disk-cached snapshot (up to an hour stale) cannot be paired with live
+	 * per-credential data; local SQLite stores omit it — their reads are
+	 * always current.
+	 */
+	refreshSnapshot?(): Promise<unknown>;
+	/**
+	 * Disabled credential tombstones (see {@link DisabledCredentialSummary}).
+	 * Optional: remote stores forward to the broker's
+	 * `GET /v1/credentials/disabled` (empty list when the broker predates the
+	 * endpoint); stores without tombstones omit it.
+	 */
+	listDisabledCredentials?(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]>;
 	updateAuthCredential(id: number, credential: AuthCredential): void;
 	deleteAuthCredential(id: number, disabledCause: string): void;
 	tryDisableAuthCredentialIfMatches(
@@ -2742,7 +2779,14 @@ export class AuthStorage {
 			this.#resetProviderAssignments(storeProvider);
 			return { type: "api_key" };
 		}
-		const newCredential: OAuthCredential = { type: "oauth", ...result };
+		// Stamp the interactive-login instant: providers with an absolute grant
+		// lifetime (Anthropic) need it to surface re-login deadlines, and token
+		// refreshes only ever merge over this credential without clearing it.
+		const newCredential: OAuthCredential = { type: "oauth", ...result, authorizedAt: Date.now() };
+		// `replace` (Kiro) keeps exactly one active credential/profile, so a new
+		// login supersedes the previous one. Otherwise upsert: legacy api_key rows
+		// from older versions are cleaned up so they cannot shadow the new OAuth
+		// row, while other active OAuth credentials are preserved.
 		if (replace) {
 			await this.set(storeProvider, newCredential);
 		} else {
@@ -2973,6 +3017,9 @@ export class AuthStorage {
 			kiroClientSecretExpiresAt: entry.credential.kiroClientSecretExpiresAt,
 			kiroTokenEndpoint: entry.credential.kiroTokenEndpoint,
 			kiroAuthMethod: entry.credential.kiroAuthMethod,
+			// Not part of UsageCredential — carried from the stored row so the
+			// interactive-login anchor survives usage-path refresh persists.
+			authorizedAt: entry.credential.authorizedAt,
 		});
 	}
 
@@ -4988,6 +5035,7 @@ export class AuthStorage {
 					result.newCredentials.kiroClientSecretExpiresAt ?? selection.credential.kiroClientSecretExpiresAt,
 				kiroTokenEndpoint: result.newCredentials.kiroTokenEndpoint ?? selection.credential.kiroTokenEndpoint,
 				kiroAuthMethod: result.newCredentials.kiroAuthMethod ?? selection.credential.kiroAuthMethod,
+				authorizedAt: result.newCredentials.authorizedAt ?? selection.credential.authorizedAt,
 			};
 			if (credentialId !== undefined) {
 				const idx = this.#replaceCredentialById(provider, credentialId, updated);
@@ -5979,6 +6027,28 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Disabled credential tombstones for display surfaces (`omp usage`,
+	 * broker `GET /v1/credentials/disabled`). Empty when the backing store
+	 * keeps no tombstones or the remote broker predates the endpoint.
+	 */
+	async listDisabledCredentials(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]> {
+		if (!this.#store.listDisabledCredentials) return [];
+		return this.#store.listDisabledCredentials(provider, signal);
+	}
+
+	/**
+	 * Force the backing store to revalidate its credential snapshot, then
+	 * reload. Remote broker stores re-fetch the snapshot; local stores are
+	 * always current, so only the reload runs. Callers that pair live
+	 * per-credential data with stored identities (`omp usage`) use this so a
+	 * disk-cached snapshot cannot misattribute fresh reports.
+	 */
+	async revalidateCredentials(): Promise<void> {
+		if (this.#store.refreshSnapshot) await this.#store.refreshSnapshot();
+		await this.reload();
+	}
+
+	/**
 	 * Refresh the OAuth credential with the given id through a per-credential
 	 * single-flight. Concurrent callers for the same row await the same upstream
 	 * refresh attempt, which is required for providers that rotate refresh tokens
@@ -6073,6 +6143,7 @@ export class AuthStorage {
 				kiroClientSecretExpiresAt: refreshed.kiroClientSecretExpiresAt ?? attempted.kiroClientSecretExpiresAt,
 				kiroTokenEndpoint: refreshed.kiroTokenEndpoint ?? attempted.kiroTokenEndpoint,
 				kiroAuthMethod: refreshed.kiroAuthMethod ?? attempted.kiroAuthMethod,
+				authorizedAt: refreshed.authorizedAt ?? attempted.authorizedAt,
 			};
 			// Persist by id: the array may have been reordered/shrunk while the
 			// refresh was in flight, so the pre-await positional index is unsafe. A
@@ -6241,6 +6312,9 @@ type AuthRow = {
 	disabled_cause: string | null;
 	identity_key: string | null;
 };
+
+/** {@link AuthRow} plus `updated_at` — disabled-tombstone queries surface when the row was torn down. */
+type DisabledAuthRow = AuthRow & { updated_at: number | null };
 
 type CredentialBlockRow = {
 	credential_id: number;
@@ -6522,6 +6596,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#db: Database;
 	#listActiveStmt: Statement;
 	#listActiveByProviderStmt: Statement;
+	#listDisabledStmt: Statement;
 	#listDisabledByProviderStmt: Statement;
 	#insertStmt: Statement;
 	#updateStmt: Statement;
@@ -6565,8 +6640,11 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		this.#listActiveByProviderStmt = this.#db.prepare(
 			"SELECT id, provider, credential_type, data, disabled_cause, identity_key FROM auth_credentials WHERE provider = ? AND disabled_cause IS NULL ORDER BY id ASC",
 		);
+		this.#listDisabledStmt = this.#db.prepare(
+			"SELECT id, provider, credential_type, data, disabled_cause, identity_key, updated_at FROM auth_credentials WHERE disabled_cause IS NOT NULL ORDER BY id ASC",
+		);
 		this.#listDisabledByProviderStmt = this.#db.prepare(
-			"SELECT id, provider, credential_type, data, disabled_cause, identity_key FROM auth_credentials WHERE provider = ? AND disabled_cause IS NOT NULL ORDER BY id ASC",
+			"SELECT id, provider, credential_type, data, disabled_cause, identity_key, updated_at FROM auth_credentials WHERE provider = ? AND disabled_cause IS NOT NULL ORDER BY id ASC",
 		);
 		this.#insertStmt = this.#db.prepare(
 			`INSERT INTO auth_credentials (provider, credential_type, data, identity_key, created_at, updated_at) VALUES (?, ?, ?, ?, ${SQLITE_NOW_EPOCH}, ${SQLITE_NOW_EPOCH}) RETURNING id`,
@@ -7071,6 +7149,34 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			const credential = deserializeCredential(row);
 			if (!credential) continue;
 			results.push(toStoredAuthCredential(row, credential));
+		}
+		return results;
+	}
+
+	async listDisabledCredentials(provider?: string): Promise<DisabledCredentialSummary[]> {
+		const rows =
+			(provider
+				? (this.#listDisabledByProviderStmt.all(provider) as DisabledAuthRow[])
+				: (this.#listDisabledStmt.all() as DisabledAuthRow[])) ?? [];
+		const results: DisabledCredentialSummary[] = [];
+		for (const row of rows) {
+			const credential = deserializeCredential(row);
+			const summary: DisabledCredentialSummary = {
+				id: row.id,
+				provider: row.provider,
+				type: row.credential_type === "api_key" ? "api_key" : "oauth",
+				cause: row.disabled_cause ?? "disabled",
+			};
+			if (credential?.type === "oauth") {
+				if (credential.email) summary.email = credential.email;
+				if (credential.accountId) summary.accountId = credential.accountId;
+				if (credential.orgId) summary.orgId = credential.orgId;
+				if (credential.orgName) summary.orgName = credential.orgName;
+			}
+			if (typeof row.updated_at === "number" && Number.isFinite(row.updated_at)) {
+				summary.disabledAtMs = row.updated_at * 1000;
+			}
+			results.push(summary);
 		}
 		return results;
 	}
@@ -7747,6 +7853,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		this.#closed = true;
 		this.#listActiveStmt.finalize();
 		this.#listActiveByProviderStmt.finalize();
+		this.#listDisabledStmt.finalize();
 		this.#listDisabledByProviderStmt.finalize();
 		this.#insertStmt.finalize();
 		this.#updateStmt.finalize();

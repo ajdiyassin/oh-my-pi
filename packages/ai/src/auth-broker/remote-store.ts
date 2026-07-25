@@ -14,6 +14,7 @@ import {
 	type AuthCredential,
 	type AuthCredentialSnapshotEntry,
 	type AuthCredentialStore,
+	type DisabledCredentialSummary,
 	type OAuthCredential,
 	REMOTE_REFRESH_SENTINEL,
 	type StoredAuthCredential,
@@ -469,6 +470,11 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			});
 		}
 		return out;
+	}
+
+	/** Broker-backed disabled tombstones; empty against brokers predating the endpoint. */
+	listDisabledCredentials(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]> {
+		return this.#client.listDisabledCredentials(provider, signal);
 	}
 
 	getCredentialBlock(credentialId: number, providerKey: string, blockScope: string): number | undefined {
