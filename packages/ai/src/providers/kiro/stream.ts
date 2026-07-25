@@ -378,6 +378,7 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 						switch (event.type) {
 							case "metadata":
 								if (event.requestId) state.output.responseId = event.requestId;
+								if (event.stopReason) state.stopReason = event.stopReason;
 								break;
 							case "reasoning":
 								state.nativeReasoning = true;

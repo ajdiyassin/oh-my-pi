@@ -61,12 +61,21 @@ export interface RegisteredCustomApi {
 
 const customApiRegistry = new Map<string, RegisteredCustomApi>();
 
-function assertCustomApiName(api: string): void {
-	if (api === "kiro" || api === "kiro-api") {
+/**
+ * Kiro is native. The legacy `omp-provider-kiro` extension must not be allowed
+ * to shadow it, at either registration seam (custom API or OAuth provider) —
+ * extensions may register in any order, so both entry points assert this.
+ */
+export function assertNotNativeKiroRegistration(id: string): void {
+	if (id === "kiro" || id === "kiro-api") {
 		throw new AIError.ConfigurationError(
 			"Kiro is built into this OMP version. Remove/disable the omp-provider-kiro extension and restart OMP; your OMP-managed Kiro login can then be configured with /login kiro.",
 		);
 	}
+}
+
+function assertCustomApiName(api: string): void {
+	assertNotNativeKiroRegistration(api);
 	if (BUILTIN_APIS.has(api as KnownApi)) {
 		throw new AIError.ConfigurationError(`Cannot register custom API "${api}": built-in API names are reserved.`);
 	}

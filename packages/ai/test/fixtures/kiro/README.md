@@ -19,6 +19,8 @@ The source archive names are recorded for provenance only; their contents are se
 - `10-device-flow`
 - `10-device-flow-google`
 - `22-image-desktop`
+- `cli-v3-full` (CLI v3: full login, prompt, thinking, usage; no image input)
+- `desktop-ide-full` (desktop/IDE: same full lifecycle, with image input)
 
 Only sanitized metadata, schemas, and independently constructed CRC-valid EventStream frames may be committed. Never copy or quote raw captures, prompts, responses, tool arguments/results, cookies, authorization codes, PKCE verifiers, refresh/access/API keys, email/account/profile identifiers, or machine paths. Use semantic markers such as `<access-token>`, `<profile-arn>`, `<request-id>`, and `<provider-message>`.
 
@@ -52,7 +54,10 @@ EventStream frames are binary Amazon EventStream messages. Decode `:message-type
 
 - Tool input represented as strings is a delta fragment and must be concatenated per tool-use ID. Tool input represented as an object is a complete snapshot; retain the newest snapshot and never append repeated serialized snapshots. Interleaved IDs remain independent. A completed empty zero-argument tool normalizes to `{}`; malformed completed input is a typed error, not raw diagnostic output.
 - `08-exception` is an HTTP 400 JSON error fixture. It must be classified from status/code/message/request-id metadata and must not be mistaken for an EventStream exception. The EventStream exception fixture is synthetic and exists to exercise frame-level exception handling separately.
-- `09-image` remained inconclusive. The later successful `22-image-desktop` capture proves current user-message images use `userInputMessage.images[]` with `{ format, source: { bytes: <base64> } }`; JPEG was observed. Tool-result image blocks and continuation-id creation remain unproven and fail closed.
+- `09-image` remained inconclusive. The later successful `22-image-desktop` capture, corroborated by `desktop-ide-full`, proves current user-message images use `userInputMessage.images[]` with `{ format, source: { bytes: <base64> } }`; JPEG and PNG were both observed. Tool-result image blocks and continuation-id creation remain unproven and fail closed.
+- `origin` is client-scoped: `KIRO_CLI` for the CLI surface and `AI_EDITOR` for the desktop/IDE surface. OMP is a CLI and always sends `KIRO_CLI`; the desktop value is recorded as observed evidence, not as an OMP request value.
+- Terminal `stopReason` arrives on `metadataEvent`, not on `assistantResponseEvent`; both `cli-v3-full` and `desktop-ide-full` show `assistantResponseEvent` carrying content only. Readers must honor the metadata spelling or every stream degrades to a default stop.
+- `meteringEvent` is a billing frame shaped `{ unit, unitPlural, usage }` where `usage` is fractional credits, not tokens. It must be recognized (not treated as unknown) and must never contribute to token usage totals; token metrics come only from the `metricsEvent`/`usage` envelopes.
 - Metrics/event fields are additive and may arrive in separate events. Preserve provider-reported input/output/cache/reasoning values; reasoning is a subset of output, and cache values are never estimated. Context usage is metadata/fallback, not a new untyped usage field.
 
 Any future protocol change must first add a sanitized fixture and fail closed on unknown or malformed recognized fields. The fixtures and this guide must remain free of secrets, identity values, raw content, and paths.
