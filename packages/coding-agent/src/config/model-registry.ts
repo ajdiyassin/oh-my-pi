@@ -2461,6 +2461,30 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Drain pending extension provider registrations, isolating failures.
+	 *
+	 * A rejected registration (e.g. the legacy `omp-provider-kiro` extension
+	 * colliding with native Kiro) must fail only that extension: unrelated
+	 * extensions and the command itself keep working.
+	 */
+	drainPendingProviderRegistrations(
+		pending: Array<{ name: string; config: ProviderConfigInput; sourceId?: string }>,
+	): void {
+		for (const { name, config, sourceId } of pending) {
+			try {
+				this.registerProvider(name, config, sourceId);
+			} catch (error) {
+				logger.error("Extension provider registration failed", {
+					provider: name,
+					sourceId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		pending.length = 0;
+	}
+
+	/**
 	 * Register a provider dynamically (from extensions).
 	 *
 	 * If provider has models: replaces all existing models for this provider.
