@@ -2475,10 +2475,6 @@ export class AuthStorage {
 						apiEndpoint: refreshed.apiEndpoint ?? current.apiEndpoint,
 						orgId: refreshed.orgId ?? current.orgId,
 						orgName: refreshed.orgName ?? current.orgName,
-						kiroClientId: refreshed.kiroClientId ?? current.kiroClientId,
-						kiroClientSecret: refreshed.kiroClientSecret ?? current.kiroClientSecret,
-						kiroTokenEndpoint: refreshed.kiroTokenEndpoint ?? current.kiroTokenEndpoint,
-						kiroAuthMethod: refreshed.kiroAuthMethod ?? current.kiroAuthMethod,
 					};
 			if (this.#store.tryUpdateAuthCredentialIfMatches) {
 				if (

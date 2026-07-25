@@ -830,12 +830,6 @@ export interface Model<TApi extends Api = Api> {
 	supportsComputerUse?: boolean;
 	/** Verbatim explicit computer-use support from the spec; undefined when `buildModel` inferred the runtime value. */
 	supportsComputerUseConfig?: boolean;
-	/** Kiro discovery-only prompt-cache capabilities; runtime activation is intentionally deferred. */
-	kiroPromptCaching?: {
-		supportsPromptCaching: boolean;
-		maximumCacheCheckpointsPerRequest?: number;
-		minimumTokensPerCacheCheckpoint?: number;
-	};
 	/** GitLab Duo Workflow root namespace selected during catalog discovery. */
 	gitlabDuoWorkflowRootNamespaceId?: string;
 	/** Cursor `max_mode` request flag returned by `GetUsableModels` for premium models that require max mode. */

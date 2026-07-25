@@ -226,12 +226,7 @@ export async function* decodeEventStream(source: ReadableStream<Uint8Array>): As
 	try {
 		while (true) {
 			const { value, done } = await reader.read();
-			if (value && value.length > 0) {
-				buf = buf.length === 0 ? value : Buffer.concat([buf, value]);
-				if (buf.length > MAX_BUFFER_SIZE) {
-					throw new EventStreamFrameError(`retained buffer exceeds ${MAX_BUFFER_SIZE} bytes`);
-				}
-			}
+			if (value && value.length > 0) buf = buf.length === 0 ? value : Buffer.concat([buf, value]);
 			let offset = 0;
 			while (buf.length - offset >= 4) {
 				const dv = new DataView(buf.buffer, buf.byteOffset + offset, buf.length - offset);
@@ -252,6 +247,9 @@ export async function* decodeEventStream(source: ReadableStream<Uint8Array>): As
 				offset += total;
 			}
 			if (offset > 0) buf = buf.slice(offset);
+			if (buf.length > MAX_BUFFER_SIZE) {
+				throw new EventStreamFrameError(`retained buffer exceeds ${MAX_BUFFER_SIZE} bytes`);
+			}
 			if (done) break;
 		}
 		if (buf.length > 0) throw new EventStreamFrameError("truncated message at end of stream");
