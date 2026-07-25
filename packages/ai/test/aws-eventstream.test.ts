@@ -347,6 +347,28 @@ describe("aws-eventstream", () => {
 		expect(cancelled).toBe(true);
 	});
 
+	test("cancels a blocked reader when its abort signal fires", async () => {
+		const controller = new AbortController();
+		const readStarted = Promise.withResolvers<void>();
+		const readerCancelled = Promise.withResolvers<void>();
+		const stream = new ReadableStream<Uint8Array>(
+			{
+				pull() {
+					readStarted.resolve();
+				},
+				cancel() {
+					readerCancelled.resolve();
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+		const next = decodeEventStream(stream, controller.signal).next();
+		await readStarted.promise;
+		controller.abort(new Error("cancelled"));
+		await expect(next).rejects.toThrow("cancelled");
+		await readerCancelled.promise;
+	});
+
 	test("exports shared frame/header/buffer bounds", () => {
 		expect(MAX_FRAME_SIZE).toBe(24 * 1024 * 1024);
 		expect(MAX_HEADERS_SIZE).toBe(128 * 1024);
