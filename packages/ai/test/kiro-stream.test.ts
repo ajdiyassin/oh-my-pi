@@ -299,6 +299,29 @@ describe("Kiro native stream", () => {
 		expect(result.duration).toBeNumber();
 		expect(result.duration!).toBeGreaterThanOrEqual(result.ttft!);
 	});
+	it("maps a terminal stop reason carried on metadataEvent and tolerates live meteringEvent frames", async () => {
+		// Live captures (CLI v3 and Desktop/IDE) report `stopReason` on `metadataEvent`
+		// while `assistantResponseEvent` carries content only, and emit a
+		// `meteringEvent` billing frame whose `usage` is fractional credits.
+		const bytes = concat(
+			frame("assistantResponseEvent", { content: "ok" }),
+			frame("meteringEvent", { unit: "credit", unitPlural: "credits", usage: 0.0386 }),
+			frame("metricsEvent", { usage: { inputTokens: 7, outputTokens: 3 } }),
+			frame("metadataEvent", { requestId: "meta-request", stopReason: "MAX_TOKENS" }),
+		);
+		const { result } = await drain(
+			streamKiro(
+				model,
+				{ messages: [user("hello")] },
+				{ apiKey: "ksk_test", fetch: async () => eventResponse(bytes) },
+			),
+		);
+		expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+		expect(result.responseId).toBe("meta-request");
+		expect(result.stopReason).toBe("length");
+		// The credit-denominated metering frame must not contaminate token usage.
+		expect(result.usage).toMatchObject({ input: 7, output: 3, totalTokens: 10 });
+	});
 
 	it("ignores unknown additive events without decoding their payload", async () => {
 		const unknown = frame("futureEvent", {});

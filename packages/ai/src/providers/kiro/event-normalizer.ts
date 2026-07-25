@@ -16,16 +16,26 @@ const METRIC_ALIASES: Readonly<Record<keyof KiroUsageMetrics, readonly string[]>
 	reasoningTokens: ["reasoningTokens", "reasoning_tokens", "reasoningOutputTokens"],
 };
 
-const METRIC_EVENT_TYPES = new Set(["metricsEvent", "usageEvent", "usage", "metrics"]);
-const KNOWN_EVENT_TYPES = new Set([
-	"initial-response",
-	"metadataEvent",
-	"reasoningContentEvent",
-	"assistantResponseEvent",
-	"toolUseEvent",
-	"contextUsageEvent",
+// `meteringEvent` is the live billing frame (`{ unit, unitPlural, usage }`, where
+// `usage` is fractional credits, not tokens). It carries no token counts, so it is
+// recognized here only to keep it out of the unknown-event path; token metrics still
+// come from the `metricsEvent`/`usage` envelopes below.
+const METRIC_EVENT_TYPES: Readonly<Record<string, true>> = {
+	metricsEvent: true,
+	usageEvent: true,
+	usage: true,
+	metrics: true,
+	meteringEvent: true,
+};
+const KNOWN_EVENT_TYPES: Readonly<Record<string, true>> = {
+	"initial-response": true,
+	metadataEvent: true,
+	reasoningContentEvent: true,
+	assistantResponseEvent: true,
+	toolUseEvent: true,
+	contextUsageEvent: true,
 	...METRIC_EVENT_TYPES,
-]);
+};
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -72,12 +82,18 @@ export function normalizeKiroFrame(message: EventStreamMessage): KiroNormalizedE
 	if (messageType !== "event" && messageType !== "exception" && messageType !== "error") {
 		return { type: "ignored" };
 	}
-	if (messageType === "event" && (!eventType || !KNOWN_EVENT_TYPES.has(eventType))) return { type: "ignored" };
+	if (messageType === "event" && (!eventType || KNOWN_EVENT_TYPES[eventType] !== true)) return { type: "ignored" };
 	const payload = decodePayload(message);
 	if (messageType === "exception" || messageType === "error") throw kiroEventStreamError(message.headers, payload);
 
 	if (eventType === "initial-response" || eventType === "metadataEvent") {
-		return { type: "metadata", requestId: typeof payload.requestId === "string" ? payload.requestId : undefined };
+		// The live runtime reports terminal `stopReason` on `metadataEvent`, not on
+		// `assistantResponseEvent`; both spellings are accepted.
+		return {
+			type: "metadata",
+			requestId: typeof payload.requestId === "string" ? payload.requestId : undefined,
+			stopReason: typeof payload.stopReason === "string" ? payload.stopReason : undefined,
+		};
 	}
 	if (eventType === "reasoningContentEvent") {
 		return {
@@ -128,7 +144,7 @@ export function normalizeKiroFrame(message: EventStreamMessage): KiroNormalizedE
 		const usage = normalizeMetrics(payload[key]);
 		if (usage) mergeKiroUsage(merged, usage);
 	}
-	if (eventType && METRIC_EVENT_TYPES.has(eventType)) {
+	if (eventType && METRIC_EVENT_TYPES[eventType] === true) {
 		const usage = normalizeMetrics(payload);
 		if (usage) mergeKiroUsage(merged, usage);
 	}

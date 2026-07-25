@@ -133,12 +133,12 @@
       "metadataEvent": {
         "messageType": "event",
         "eventType": "metadataEvent",
-        "payload": { "requestId": "<request-id>" }
+        "payload": { "requestId": "<request-id>", "stopReason": "END_TURN" }
       },
       "meteringEvent": {
         "messageType": "event",
         "eventType": "meteringEvent",
-        "payload": { "meteringUnits": 1 }
+        "payload": { "unit": "<metering-unit>", "unitPlural": "<metering-unit-plural>", "usage": 0.0386 }
       },
       "metricsEvent": {
         "messageType": "event",

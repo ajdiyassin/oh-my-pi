@@ -90,7 +90,7 @@ export interface KiroUsageMetrics {
 }
 
 export type KiroNormalizedEvent =
-	| { type: "metadata"; requestId?: string }
+	| { type: "metadata"; requestId?: string; stopReason?: string }
 	| { type: "reasoning"; text?: string; signature?: string }
 	| { type: "content"; content: string; stopReason?: string }
 	| {
