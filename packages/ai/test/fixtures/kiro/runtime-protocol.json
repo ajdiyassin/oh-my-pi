@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "source": "sanitized-capture-metadata",
+  "privacy": {
+    "synthetic": true,
+    "markerConvention": "Angle-bracketed values describe redacted semantics and are not captured values."
+  },
+  "contracts": {
+    "profiles": {
+      "target": "AmazonCodeWhispererService.ListAvailableProfiles",
+      "request": {},
+      "response": {
+        "profiles": [{ "arn": "<profile-arn>", "profileName": "<profile-display-name>" }]
+      }
+    },
+    "models": {
+      "target": "AmazonCodeWhispererService.ListAvailableModels",
+      "oauthRequest": { "origin": "KIRO_CLI", "profileArn": "<profile-arn>" },
+      "apiKeyRequest": { "origin": "KIRO_CLI" },
+      "response": {
+        "models": [
+          {
+            "modelId": "<exact-live-model-id>",
+            "modelName": "<model-display-name>",
+            "tokenLimits": { "maxInputTokens": 200000, "maxOutputTokens": 64000 },
+            "supportedInputModalities": ["TEXT"],
+            "supportedOutputModalities": ["TEXT"]
+          }
+        ],
+        "defaultModel": "<exact-live-model-id>"
+      },
+      "authoritativeOnSuccess": true
+    },
+    "usage": {
+      "target": "AmazonCodeWhispererService.GetUsageLimits",
+      "oauthRequest": { "profileArn": "<profile-arn>" },
+      "response": {
+        "usageBreakdownList": [
+          {
+            "resourceType": "<usage-resource-type>",
+            "currentUsage": 1,
+            "usageLimit": 100,
+            "nextDateReset": "<reset-timestamp>"
+          }
+        ]
+      }
+    },
+    "runtimeRequests": {
+      "target": "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+      "apiKey": {
+        "headers": {
+          "authorization": "Bearer <api-key>",
+          "accept": "application/vnd.amazon.eventstream",
+          "content-type": "application/x-amz-json-1.0"
+        },
+        "body": {
+          "conversationState": {
+            "chatTriggerType": "MANUAL",
+            "agentTaskType": "vibe",
+            "conversationId": "<conversation-id>",
+            "currentMessage": {
+              "userInputMessage": {
+                "content": "<user-content>",
+                "modelId": "<exact-live-model-id>",
+                "origin": "KIRO_CLI",
+                "userInputMessageContext": "<sanitized-context>"
+              }
+            }
+          }
+        },
+        "forbiddenBodyFields": ["profileArn"]
+      },
+      "oauth": {
+        "headers": {
+          "authorization": "Bearer <oauth-access-token>",
+          "accept": "application/vnd.amazon.eventstream",
+          "content-type": "application/x-amz-json-1.0"
+        },
+        "body": {
+          "conversationState": "<conversation-state>",
+          "profileArn": "<profile-arn>"
+        }
+      }
+    },
+    "httpErrors": {
+      "requestBodyInvalid": {
+        "status": 400,
+        "contentType": "application/x-amz-json-1.0",
+        "body": {
+          "__type": "REQUEST_BODY_INVALID",
+          "message": "<sanitized-provider-message>",
+          "reason": "<sanitized-provider-reason>"
+        }
+      }
+    },
+    "events": {
+      "initial-response": {
+        "messageType": "event",
+        "eventType": "initial-response",
+        "payload": { "requestId": "<request-id>" }
+      },
+      "reasoningContentEvent": {
+        "messageType": "event",
+        "eventType": "reasoningContentEvent",
+        "textVariant": { "text": "<reasoning-delta>" },
+        "signatureVariant": { "signature": "<reasoning-signature>" }
+      },
+      "assistantResponseEvent": {
+        "messageType": "event",
+        "eventType": "assistantResponseEvent",
+        "payload": { "content": "<assistant-delta>", "stopReason": "END_TURN" }
+      },
+      "toolUseEvent": {
+        "messageType": "event",
+        "eventType": "toolUseEvent",
+        "stringDeltaSequence": [
+          { "toolUseId": "<tool-use-id>", "name": "<tool-name>", "input": "<json-fragment-1>" },
+          { "toolUseId": "<tool-use-id>", "input": "<json-fragment-2>" }
+        ],
+        "objectSnapshot": {
+          "toolUseId": "<tool-use-id>",
+          "name": "<tool-name>",
+          "input": "<complete-json-object>"
+        }
+      },
+      "contextUsageEvent": {
+        "messageType": "event",
+        "eventType": "contextUsageEvent",
+        "payload": { "contextUsagePercentage": 12.5 }
+      },
+      "metadataEvent": {
+        "messageType": "event",
+        "eventType": "metadataEvent",
+        "payload": { "requestId": "<request-id>" }
+      },
+      "meteringEvent": {
+        "messageType": "event",
+        "eventType": "meteringEvent",
+        "payload": { "meteringUnits": 1 }
+      },
+      "metricsEvent": {
+        "messageType": "event",
+        "eventType": "metricsEvent",
+        "payload": {
+          "inputTokens": 10,
+          "outputTokens": 4,
+          "cacheReadTokens": 2,
+          "cacheCreationTokens": 1,
+          "reasoningTokens": 1
+        },
+        "acceptedEnvelopes": ["usage", "metricsEvent", "metrics", "usageEvent"],
+        "acceptedCaseStyles": ["camelCase", "snake_case"]
+      }
+    }
+  }
+}

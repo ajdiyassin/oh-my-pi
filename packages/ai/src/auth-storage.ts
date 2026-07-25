@@ -98,6 +98,7 @@ const ANTHROPIC_SESSION_STICKY_CACHE_WARM_MS = 60 * 60_000;
 export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
+	apiEndpoint?: string;
 	source?: "login";
 };
 
@@ -127,6 +128,25 @@ export interface CredentialOrigin {
 	/** Env var name when `kind === "env"` and a single named variable backs it. */
 	envVar?: string;
 }
+
+export type ResolvedAuthCredential =
+	| {
+			type: "api_key";
+			token: string;
+			apiEndpoint?: string;
+			origin: CredentialOriginKind;
+			credentialId?: number;
+	  }
+	| {
+			type: "oauth";
+			token: string;
+			refreshable: boolean;
+			orgId?: string;
+			accountId?: string;
+			email?: string;
+			apiEndpoint?: string;
+			credentialId?: number;
+	  };
 
 /**
  * Serialized representation of AuthStorage for passing to subagent workers.
@@ -752,7 +772,7 @@ type UsageRequestDescriptor = {
 	baseUrl?: string;
 };
 
-type AuthApiKeyOptions = {
+export type AuthApiKeyOptions = {
 	baseUrl?: string;
 	modelId?: string;
 	/**
@@ -770,6 +790,7 @@ type AuthApiKeyOptions = {
 	forceRefresh?: boolean;
 };
 type OAuthResolutionResult = { apiKey: string; credential: OAuthCredential; credentialId?: number };
+type ResolvedCredentialSelection = { credential: ResolvedAuthCredential; apiKey: string };
 
 /**
  * Refreshed OAuth access plus identity metadata returned by
@@ -1091,7 +1112,7 @@ function raceCredentialRefreshWithSignal<T>(
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
-		return right.type === "api_key" && left.key === right.key;
+		return right.type === "api_key" && left.key === right.key && left.apiEndpoint === right.apiEndpoint;
 	}
 	if (right.type !== "oauth") return false;
 	return (
@@ -1101,7 +1122,10 @@ function authCredentialEquals(left: AuthCredential, right: AuthCredential): bool
 		left.accountId === right.accountId &&
 		left.email === right.email &&
 		left.projectId === right.projectId &&
-		left.enterpriseUrl === right.enterpriseUrl
+		left.enterpriseUrl === right.enterpriseUrl &&
+		left.apiEndpoint === right.apiEndpoint &&
+		left.orgId === right.orgId &&
+		left.orgName === right.orgName
 	);
 }
 
@@ -2692,27 +2716,38 @@ export class AuthStorage {
 			signal: ctrl.signal,
 			fetch: ctrl.fetch,
 		});
-		if (typeof result === "string") {
+		const storeProvider = def.storeCredentialsAs ?? provider;
+		const replace = def.credentialPolicy === "replace";
+		if (typeof result === "string" || "type" in result) {
+			const key = typeof result === "string" ? result : result.key;
 			// Some flows (e.g. ollama) return "" to signal that no key was entered.
-			if (!result) {
-				return undefined;
-			}
-			const newCredential: ApiKeyCredential = { type: "api_key", key: result, source: "login" };
-			const stored = this.#store.upsertAuthCredentialRemote
-				? await this.#store.upsertAuthCredentialRemote(provider, newCredential)
-				: this.#store.upsertAuthCredentialForProvider(provider, newCredential);
+			if (!key) return undefined;
+			const newCredential: ApiKeyCredential = {
+				type: "api_key",
+				key,
+				source: "login",
+				apiEndpoint: typeof result === "string" ? undefined : result.apiEndpoint,
+			};
+			const stored = replace
+				? this.#store.replaceAuthCredentialsRemote
+					? await this.#store.replaceAuthCredentialsRemote(storeProvider, [newCredential])
+					: this.#store.replaceAuthCredentialsForProvider(storeProvider, [newCredential])
+				: this.#store.upsertAuthCredentialRemote
+					? await this.#store.upsertAuthCredentialRemote(storeProvider, newCredential)
+					: this.#store.upsertAuthCredentialForProvider(storeProvider, newCredential);
 			this.#setStoredCredentials(
-				provider,
+				storeProvider,
 				stored.map(entry => ({ id: entry.id, credential: entry.credential })),
 			);
-			this.#resetProviderAssignments(provider);
+			this.#resetProviderAssignments(storeProvider);
 			return { type: "api_key" };
 		}
 		const newCredential: OAuthCredential = { type: "oauth", ...result };
-		// Use #upsertOAuthCredential to upsert the new credential.
-		// Any legacy api_key rows from older versions will be cleaned up so they do not
-		// shadow the new OAuth row, while preserving other active OAuth credentials.
-		await this.#upsertOAuthCredential(def.storeCredentialsAs ?? provider, newCredential);
+		if (replace) {
+			await this.set(storeProvider, newCredential);
+		} else {
+			await this.#upsertOAuthCredential(storeProvider, newCredential);
+		}
 		return {
 			type: "oauth",
 			email: newCredential.email,
@@ -2739,6 +2774,7 @@ export class AuthStorage {
 			return {
 				type: "api_key",
 				apiKey: credential.key,
+				apiEndpoint: credential.apiEndpoint,
 			};
 		}
 		return {
@@ -2821,7 +2857,7 @@ export class AuthStorage {
 		return this.#buildUsageRequest(provider, this.#buildUsageCredential(credential), baseUrl);
 	}
 
-	#buildRefreshableOauthCredential(credential: UsageCredential): OAuthCredential | null {
+	#buildRefreshableOauthCredential(credential: UsageCredential, persisted?: OAuthCredential): OAuthCredential | null {
 		if (!credential.accessToken || !credential.refreshToken || credential.expiresAt === undefined) {
 			return null;
 		}
@@ -2837,6 +2873,11 @@ export class AuthStorage {
 			orgName: credential.orgName,
 			enterpriseUrl: credential.enterpriseUrl,
 			apiEndpoint: credential.apiEndpoint,
+			kiroClientId: persisted?.kiroClientId,
+			kiroClientSecret: persisted?.kiroClientSecret,
+			kiroClientSecretExpiresAt: persisted?.kiroClientSecretExpiresAt,
+			kiroTokenEndpoint: persisted?.kiroTokenEndpoint,
+			kiroAuthMethod: persisted?.kiroAuthMethod,
 		};
 	}
 
@@ -2927,6 +2968,11 @@ export class AuthStorage {
 			apiEndpoint: next.apiEndpoint,
 			orgId: next.orgId ?? entry.credential.orgId,
 			orgName: next.orgName ?? entry.credential.orgName,
+			kiroClientId: entry.credential.kiroClientId,
+			kiroClientSecret: entry.credential.kiroClientSecret,
+			kiroClientSecretExpiresAt: entry.credential.kiroClientSecretExpiresAt,
+			kiroTokenEndpoint: entry.credential.kiroTokenEndpoint,
+			kiroAuthMethod: entry.credential.kiroAuthMethod,
 		});
 	}
 
@@ -2952,13 +2998,16 @@ export class AuthStorage {
 			request.credential.expiresAt !== undefined &&
 			Date.now() + OAUTH_REFRESH_SKEW_MS >= request.credential.expiresAt
 		) {
-			const refreshableCredential = this.#buildRefreshableOauthCredential(request.credential);
+			const refreshableCredentialId = this.#findStoredCredentialIdForUsageCredential(
+				request.provider,
+				request.credential,
+			);
+			const persisted = this.#getStoredCredentials(request.provider).find(
+				entry => entry.id === refreshableCredentialId && entry.credential.type === "oauth",
+			)?.credential as OAuthCredential | undefined;
+			const refreshableCredential = this.#buildRefreshableOauthCredential(request.credential, persisted);
 			if (refreshableCredential) {
 				try {
-					const refreshableCredentialId = this.#findStoredCredentialIdForUsageCredential(
-						request.provider,
-						request.credential,
-					);
 					const refreshed = await this.#refreshOAuthCredential(
 						request.provider,
 						refreshableCredential,
@@ -3969,7 +4018,7 @@ export class AuthStorage {
 				initialRequest.credential.expiresAt !== undefined &&
 				Date.now() >= initialRequest.credential.expiresAt
 			) {
-				const refreshable = this.#buildRefreshableOauthCredential(initialRequest.credential);
+				const refreshable = this.#buildRefreshableOauthCredential(initialRequest.credential, cred);
 				if (refreshable) {
 					try {
 						const refreshed = await this.#refreshOAuthCredential(
@@ -4933,6 +4982,12 @@ export class AuthStorage {
 				apiEndpoint: result.newCredentials.apiEndpoint ?? selection.credential.apiEndpoint,
 				orgId: result.newCredentials.orgId ?? selection.credential.orgId,
 				orgName: result.newCredentials.orgName ?? selection.credential.orgName,
+				kiroClientId: result.newCredentials.kiroClientId ?? selection.credential.kiroClientId,
+				kiroClientSecret: result.newCredentials.kiroClientSecret ?? selection.credential.kiroClientSecret,
+				kiroClientSecretExpiresAt:
+					result.newCredentials.kiroClientSecretExpiresAt ?? selection.credential.kiroClientSecretExpiresAt,
+				kiroTokenEndpoint: result.newCredentials.kiroTokenEndpoint ?? selection.credential.kiroTokenEndpoint,
+				kiroAuthMethod: result.newCredentials.kiroAuthMethod ?? selection.credential.kiroAuthMethod,
 			};
 			if (credentialId !== undefined) {
 				const idx = this.#replaceCredentialById(provider, credentialId, updated);
@@ -5108,60 +5163,83 @@ export class AuthStorage {
 	 * 6. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
 	 * 7. Fallback resolver (models.yml custom providers, last-resort)
 	 */
-	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
-		// Runtime override takes highest priority
+	async #resolveCredentialSelection(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedCredentialSelection | undefined> {
 		const runtimeKey = this.#runtimeOverrides.get(provider);
 		if (runtimeKey) {
-			return runtimeKey;
+			return { apiKey: runtimeKey, credential: { type: "api_key", token: runtimeKey, origin: "runtime" } };
 		}
-
-		// Config override: explicit apiKey pinned in models.yml beats the broker's
-		// OAuth credentials. The user redirected a provider at a custom baseUrl
-		// (e.g. an auth-gateway) and supplied the bearer for that endpoint —
-		// honor it instead of forwarding an upstream OAuth token that the proxy
-		// won't accept.
 		const configKey = this.#configOverrides.get(provider);
 		if (configKey) {
-			return configKey;
+			return { apiKey: configKey, credential: { type: "api_key", token: configKey, origin: "config" } };
 		}
 
-		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
-		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
 		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
 		if (oauthResolved) {
-			return oauthResolved.apiKey;
-		}
-		const loginApiKeySelection = await this.#selectApiKeyCredential(
-			provider,
-			sessionId,
-			options,
-			credential => credential.source === "login",
-		);
-		if (loginApiKeySelection) {
-			this.#recordSessionCredential(provider, sessionId, "api_key", loginApiKeySelection.index);
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const { credential, credentialId } = oauthResolved;
+			return {
+				apiKey: oauthResolved.apiKey,
+				credential: {
+					type: "oauth",
+					token: credential.access,
+					refreshable: credential.refresh.length > 0,
+					orgId: credential.orgId,
+					accountId: credential.accountId,
+					email: credential.email,
+					apiEndpoint: credential.apiEndpoint,
+					credentialId,
+				},
+			};
 		}
 
-		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
-		// env/api_key/fallback, not OAuth, so clear it now so getOAuthAccountId() correctly
-		// suppresses account_uuid for this session.
+		const resolveStoredApiKey = async (
+			filter: (credential: ApiKeyCredential) => boolean,
+		): Promise<ResolvedCredentialSelection | undefined> => {
+			const selection = await this.#selectApiKeyCredential(provider, sessionId, options, filter);
+			if (!selection) return undefined;
+			const token = await this.#configValueResolver(selection.credential.key);
+			if (!token) return undefined;
+			this.#recordSessionCredential(provider, sessionId, "api_key", selection.index);
+			return {
+				apiKey: token,
+				credential: {
+					type: "api_key",
+					token,
+					apiEndpoint: selection.credential.apiEndpoint,
+					origin: "api_key",
+					credentialId: this.#getStoredCredentials(provider)[selection.index]?.id,
+				},
+			};
+		};
+		const loginApiKey = await resolveStoredApiKey(credential => credential.source === "login");
+		if (loginApiKey) return loginApiKey;
+
 		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
-
 		const envKey = getEnvApiKey(provider);
-		if (envKey) return envKey;
-		const apiKeySelection = await this.#selectApiKeyCredential(
-			provider,
-			sessionId,
-			options,
-			credential => credential.source !== "login",
-		);
-		if (apiKeySelection) {
-			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
-			return this.#configValueResolver(apiKeySelection.credential.key);
+		if (envKey) {
+			return { apiKey: envKey, credential: { type: "api_key", token: envKey, origin: "env" } };
 		}
+		const storedApiKey = await resolveStoredApiKey(credential => credential.source !== "login");
+		if (storedApiKey) return storedApiKey;
+		const fallback = this.#fallbackResolver?.(provider);
+		return fallback
+			? { apiKey: fallback, credential: { type: "api_key", token: fallback, origin: "fallback" } }
+			: undefined;
+	}
 
-		// Fall back to custom resolver (e.g., models.json custom providers)
-		return this.#fallbackResolver?.(provider) ?? undefined;
+	async resolveCredential(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedAuthCredential | undefined> {
+		return (await this.#resolveCredentialSelection(provider, sessionId, options))?.credential;
+	}
+
+	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
+		return (await this.#resolveCredentialSelection(provider, sessionId, options))?.apiKey;
 	}
 
 	/**
@@ -5864,6 +5942,15 @@ export class AuthStorage {
 		};
 	}
 
+	#redactSnapshotCredential(provider: string, credential: AuthCredential): SnapshotCredential {
+		if (credential.type === "api_key") return credential;
+		if (provider === "kiro") {
+			const { kiroClientSecret: _registeredClientSecret, ...routingCredential } = credential;
+			return { ...routingCredential, refresh: REMOTE_REFRESH_SENTINEL };
+		}
+		return { ...credential, refresh: REMOTE_REFRESH_SENTINEL };
+	}
+
 	// ─── Auth Broker integration ────────────────────────────────────────────
 
 	/**
@@ -5879,13 +5966,12 @@ export class AuthStorage {
 		for (const [provider, stored] of this.#data) {
 			for (const entry of stored) {
 				const credential = entry.credential;
-				const redacted: SnapshotCredential =
-					credential.type === "api_key" ? credential : { ...credential, refresh: REMOTE_REFRESH_SENTINEL };
+				const redacted = this.#redactSnapshotCredential(provider, credential);
 				entries.push({
 					id: entry.id,
 					provider,
 					credential: redacted,
-					identityKey: resolveCredentialIdentityKey(provider, credential),
+					identityKey: resolveCredentialIdentityKey(provider, redacted),
 				});
 			}
 		}
@@ -5982,6 +6068,11 @@ export class AuthStorage {
 				apiEndpoint: refreshed.apiEndpoint ?? attempted.apiEndpoint,
 				orgId: refreshed.orgId ?? attempted.orgId,
 				orgName: refreshed.orgName ?? attempted.orgName,
+				kiroClientId: refreshed.kiroClientId ?? attempted.kiroClientId,
+				kiroClientSecret: refreshed.kiroClientSecret ?? attempted.kiroClientSecret,
+				kiroClientSecretExpiresAt: refreshed.kiroClientSecretExpiresAt ?? attempted.kiroClientSecretExpiresAt,
+				kiroTokenEndpoint: refreshed.kiroTokenEndpoint ?? attempted.kiroTokenEndpoint,
+				kiroAuthMethod: refreshed.kiroAuthMethod ?? attempted.kiroAuthMethod,
 			};
 			// Persist by id: the array may have been reordered/shrunk while the
 			// refresh was in flight, so the pre-await positional index is unsafe. A
@@ -5993,7 +6084,7 @@ export class AuthStorage {
 			return {
 				id,
 				provider,
-				credential: { ...updated, refresh: REMOTE_REFRESH_SENTINEL },
+				credential: this.#redactSnapshotCredential(provider, updated),
 				identityKey: resolveCredentialIdentityKey(provider, updated),
 			};
 		}
@@ -6037,8 +6128,7 @@ export class AuthStorage {
 		this.#resetProviderAssignments(provider);
 		return stored.map(entry => {
 			const persisted = entry.credential;
-			const redacted: SnapshotCredential =
-				persisted.type === "api_key" ? persisted : { ...persisted, refresh: REMOTE_REFRESH_SENTINEL };
+			const redacted = this.#redactSnapshotCredential(provider, persisted);
 			return {
 				id: entry.id,
 				provider: entry.provider,
@@ -6197,7 +6287,10 @@ function normalizeStoredIdentityKey(identityKey: string | null | undefined): str
 
 function serializeCredential(provider: string, credential: AuthCredential): SerializedCredentialRecord | null {
 	if (credential.type === "api_key") {
-		const data = credential.source === "login" ? { key: credential.key, source: "login" } : { key: credential.key };
+		const data =
+			credential.source === "login"
+				? { key: credential.key, source: "login" as const, apiEndpoint: credential.apiEndpoint }
+				: { key: credential.key, apiEndpoint: credential.apiEndpoint };
 		return {
 			credentialType: "api_key",
 			data: JSON.stringify(data),
@@ -6229,7 +6322,10 @@ function deserializeCredential(row: AuthRow): AuthCredential | null {
 		const data = parsed as Record<string, unknown>;
 		if (typeof data.key === "string") {
 			const source = data.source === "login" ? "login" : undefined;
-			return source ? { type: "api_key", key: data.key, source } : { type: "api_key", key: data.key };
+			const apiEndpoint = typeof data.apiEndpoint === "string" ? data.apiEndpoint : undefined;
+			return source
+				? { type: "api_key", key: data.key, source, apiEndpoint }
+				: { type: "api_key", key: data.key, apiEndpoint };
 		}
 	}
 	if (row.credential_type === "oauth") {

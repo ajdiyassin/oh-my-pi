@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added unreachable Kiro Phase 1 route validation, bounded model discovery, schema-derived model mapping, exact historical aliases, and authoritative 24-hour model-cache options ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 ## [17.1.3] - 2026-07-24
 
 ### Fixed

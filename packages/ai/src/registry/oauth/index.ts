@@ -144,6 +144,11 @@ export async function getOAuthApiKey(
 			{ kind: "validation", provider },
 		);
 	}
+	const providerApiKey = getProviderDefinition(provider)?.getApiKey;
+	if (providerApiKey) {
+		return { newCredentials: creds, apiKey: providerApiKey(creds) };
+	}
+
 	// For providers that need request-time credential metadata, return JSON.
 	const needsStructuredApiKey =
 		provider === "github-copilot" ||
