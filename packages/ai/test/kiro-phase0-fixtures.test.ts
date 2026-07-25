@@ -81,7 +81,8 @@ function assertSanitized(value: unknown, path = "fixture"): void {
 	if (!value || typeof value !== "object") return;
 	for (const [key, child] of Object.entries(value)) {
 		if (forbiddenSensitiveKeys.has(key) && typeof child === "string") {
-			expect(child, `${path}.${key} must use a semantic marker`).toMatch(/^<[a-z0-9-]+>$/);
+			const markerPattern = key === "authorization" ? /^(?:Bearer )?<[a-z0-9-]+>$/ : /^<[a-z0-9-]+>$/;
+			expect(child, `${path}.${key} must use a semantic marker`).toMatch(markerPattern);
 		}
 		assertSanitized(child, `${path}.${key}`);
 	}

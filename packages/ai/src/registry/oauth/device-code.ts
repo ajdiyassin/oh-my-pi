@@ -21,10 +21,14 @@ export interface OAuthDeviceCodeFlowOptions<T> {
 	poll(): OAuthDeviceCodePollResult<T> | Promise<OAuthDeviceCodePollResult<T>>;
 	/** Provider-requested polling cadence; defaults to RFC 8628's five seconds. */
 	intervalSeconds?: number;
+	/** Exact polling cadence for callers with an already-normalized duration. */
+	intervalMilliseconds?: number;
 	/** Provider-issued expiry window for the device code. */
 	expiresInSeconds?: number;
 	/** Cancels the flow with the legacy "Login cancelled" error. */
 	signal?: AbortSignal;
+	/** Optional hard cap independent of the provider-issued expiry window. */
+	maxAttempts?: number;
 }
 
 async function abortableDeviceFlowSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -56,16 +60,21 @@ export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodeFlowOpt
 		typeof options.expiresInSeconds === "number"
 			? Date.now() + options.expiresInSeconds * 1000
 			: Number.POSITIVE_INFINITY;
-	let intervalMs = Math.max(
-		MINIMUM_DEVICE_FLOW_INTERVAL_MS,
-		Math.floor((options.intervalSeconds ?? DEFAULT_DEVICE_FLOW_INTERVAL_SECONDS) * 1000),
-	);
+	let intervalMs =
+		options.intervalMilliseconds === undefined
+			? Math.max(
+					MINIMUM_DEVICE_FLOW_INTERVAL_MS,
+					Math.floor((options.intervalSeconds ?? DEFAULT_DEVICE_FLOW_INTERVAL_SECONDS) * 1000),
+				)
+			: Math.max(0, Math.floor(options.intervalMilliseconds));
 	let slowDownResponses = 0;
+	let attempts = 0;
 
-	while (Date.now() < deadline) {
+	while (Date.now() < deadline && (options.maxAttempts === undefined || attempts < options.maxAttempts)) {
 		if (options.signal?.aborted) {
 			throw new AIError.LoginCancelledError(DEVICE_FLOW_CANCEL_MESSAGE);
 		}
+		attempts += 1;
 		const result = await options.poll();
 		if (result.status === "complete") {
 			return result.value;

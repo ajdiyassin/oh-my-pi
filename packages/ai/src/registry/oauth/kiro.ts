@@ -1,4 +1,4 @@
-import type { KiroProfileSummary } from "@oh-my-pi/pi-catalog/discovery/kiro";
+import type { KiroApiKeyBootstrapResult, KiroProfileSummary } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import {
 	kiroManagementRequest,
 	listKiroAvailableProfiles,
@@ -6,9 +6,15 @@ import {
 	sanitizeKiroModelCatalog,
 } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
-import { kiroRuntimeBaseUrl, parseKiroProfileArn, validateKiroApiRegion } from "@oh-my-pi/pi-catalog/wire/kiro";
+import {
+	kiroRuntimeBaseUrl,
+	parseKiroProfileArn,
+	resolveKiroApiRegion,
+	validateKiroApiRegion,
+} from "@oh-my-pi/pi-catalog/wire/kiro";
 import * as AIError from "../../error";
 import { OAuthCallbackFlow } from "./callback-server";
+import { pollOAuthDeviceCodeFlow } from "./device-code";
 import type { OAuthController, OAuthCredentials, OAuthLoginCallbacks } from "./types";
 
 const PROVIDER = "kiro";
@@ -47,6 +53,11 @@ export interface KiroDeviceConfig {
 
 type JsonRecord = Record<string, unknown>;
 
+interface KiroDevicePollCompletion {
+	result: OAuthCredentials;
+	pollBody: JsonRecord;
+}
+
 function record(value: unknown, message: string): JsonRecord {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new AIError.OAuthError(message, { kind: "validation", provider: PROVIDER });
@@ -66,6 +77,17 @@ function positiveNumber(value: unknown, field: string): number {
 		throw new AIError.OAuthError(`Kiro response has invalid ${field}`, { kind: "validation", provider: PROVIDER });
 	}
 	return value;
+}
+
+function registeredClientExpiry(value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isSafeInteger(value) || (value as number) < 0) {
+		throw new AIError.OAuthError("Kiro response has invalid clientSecretExpiresAt", {
+			kind: "validation",
+			provider: PROVIDER,
+		});
+	}
+	return value === 0 ? 0 : (value as number) * 1000;
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
@@ -109,17 +131,17 @@ async function request(
 	if (options.signal?.aborted) throw new AIError.LoginCancelledError();
 	const timeout = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-	let response: Response;
 	try {
-		response = await (options.fetch ?? fetch)(url, { ...init, signal });
+		const response = await (options.fetch ?? fetch)(url, { ...init, signal });
+		const body = await boundedJson(response);
+		return { response, body };
 	} catch (cause) {
 		if (options.signal?.aborted) throw new AIError.LoginCancelledError();
 		if (timeout.aborted)
 			throw new AIError.OAuthError("Kiro request timed out", { kind: "timeout", provider: PROVIDER, cause });
+		if (cause instanceof AIError.OAuthError) throw cause;
 		throw new AIError.OAuthError("Kiro request failed", { kind, provider: PROVIDER, cause });
 	}
-	const body = await boundedJson(response);
-	return { response, body };
 }
 
 function credentials(body: unknown, fallbackRefresh?: string): OAuthCredentials {
@@ -183,7 +205,17 @@ export async function validateKiroApiKey(
 			});
 		}
 	}
-	const result = await probeKiroApiKeyBootstrap({ token, fetch: options.fetch, signal: options.signal });
+	let result: KiroApiKeyBootstrapResult | null;
+	try {
+		result = await probeKiroApiKeyBootstrap({ token, fetch: options.fetch, signal: options.signal });
+	} catch (cause) {
+		if (options.signal?.aborted) throw new AIError.LoginCancelledError();
+		throw new AIError.OAuthError("Kiro API-key route discovery failed", {
+			kind: "discovery",
+			provider: PROVIDER,
+			cause,
+		});
+	}
 	if (!result) {
 		throw new AIError.OAuthError(
 			"Kiro API key did not resolve to exactly one route; set KIRO_API_REGION to the key's AWS region",
@@ -301,7 +333,7 @@ class KiroBrowserFlow extends OAuthCallbackFlow {
 				status: result.response.status,
 			});
 		const resultCredentials = credentials(result.body);
-		const selected = await selectKiroProfile(resultCredentials.access, this.config.region, {
+		const selected = await selectKiroProfile(resultCredentials.access, resolveKiroApiRegion(this.config.region), {
 			fetch: this.ctrl.fetch,
 			signal: this.ctrl.signal,
 			onPrompt: this.ctrl.onPrompt,
@@ -327,18 +359,13 @@ export async function loginKiroBrowser(
 	return new KiroBrowserFlow(ctrl, config).login();
 }
 
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	if (signal?.aborted) throw new AIError.LoginCancelledError();
-	await Bun.sleep(ms);
-	if (signal?.aborted) throw new AIError.LoginCancelledError();
-}
-
 export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDeviceConfig): Promise<OAuthCredentials> {
 	const region = validateKiroApiRegion(config.region);
 	if (!region)
 		throw new AIError.OAuthError("Invalid Kiro device region", { kind: "configuration", provider: PROVIDER });
 	let clientId = config.appId;
 	let clientSecret: string | undefined;
+	let clientSecretExpiresAt: number | undefined;
 	let tokenUrl: string;
 	let authorizationUrl: string;
 	let authorizationBody: RequestInit["body"];
@@ -368,6 +395,7 @@ export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDev
 		const registration = record(registered.body, "Invalid Kiro client registration");
 		clientId = requiredString(registration.clientId, "clientId");
 		clientSecret = requiredString(registration.clientSecret, "clientSecret");
+		clientSecretExpiresAt = registeredClientExpiry(registration.clientSecretExpiresAt);
 		tokenUrl = typeof registration.tokenEndpoint === "string" ? registration.tokenEndpoint : `${host}/token`;
 		authorizationUrl = `${host}/device_authorization`;
 		authorizationHeaders = { "content-type": "application/json" };
@@ -413,69 +441,73 @@ export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDev
 		(config.kind === "builder-id"
 			? positiveNumber(device.interval, "interval") * 1000
 			: positiveNumber(device.intervalInMilliseconds, "intervalInMilliseconds"));
-	const maxPolls = Math.min(config.maxPolls ?? Math.ceil(expiresMs / intervalMs), 600);
-	for (let attempt = 0; attempt < maxPolls; attempt += 1) {
-		if (attempt > 0) await sleep(intervalMs, ctrl.signal);
-		const pollInit =
-			config.kind === "builder-id"
-				? {
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({
-							grantType: "urn:ietf:params:oauth:grant-type:device_code",
-							deviceCode,
-							clientId: clientId!,
-							clientSecret: clientSecret!,
-						}),
-					}
-				: {
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({ deviceCode, appId: clientId }),
-					};
-		const polled = await request(tokenUrl, pollInit, { fetch: ctrl.fetch, signal: ctrl.signal }, "polling");
-		const pollBody = record(polled.body, "Invalid Kiro polling response");
-		const pending =
-			config.kind === "builder-id"
-				? pollBody.error === "authorization_pending"
-				: pollBody.status === "authorization_pending";
-		if (pending) continue;
-		if (!polled.response.ok || pollBody.error) {
-			throw new AIError.OAuthError(
-				`Kiro device authorization rejected: ${String(pollBody.error ?? pollBody.status ?? polled.response.status)}`,
-				{ kind: "device-auth", provider: PROVIDER, status: polled.response.status },
-			);
-		}
-		const result = credentials(pollBody);
-		let selected: { profileArn: string; profileName: string | undefined };
-		if (typeof pollBody.profileArn === "string") {
-			const parsed = parseKiroProfileArn(pollBody.profileArn);
-			if (!parsed)
-				throw new AIError.OAuthError("Kiro returned an invalid profile ARN", {
-					kind: "validation",
-					provider: PROVIDER,
-				});
-			selected = { profileArn: parsed.profileArn, profileName: undefined };
-		} else {
-			selected = await selectKiroProfile(result.access, region, {
-				fetch: ctrl.fetch,
-				signal: ctrl.signal,
-				onPrompt: ctrl.onPrompt,
+	const maxPolls = Math.min(config.maxPolls ?? Math.ceil(expiresMs / Math.max(intervalMs, 1)), 600);
+	const pollInit =
+		config.kind === "builder-id"
+			? {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						grantType: "urn:ietf:params:oauth:grant-type:device_code",
+						deviceCode,
+						clientId: clientId!,
+						clientSecret: clientSecret!,
+					}),
+				}
+			: {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ deviceCode, appId: clientId }),
+				};
+	const completed = await pollOAuthDeviceCodeFlow<KiroDevicePollCompletion>({
+		poll: async () => {
+			const polled = await request(tokenUrl, pollInit, { fetch: ctrl.fetch, signal: ctrl.signal }, "polling");
+			const pollBody = record(polled.body, "Invalid Kiro polling response");
+			const pollStatus = pollBody.error ?? pollBody.status;
+			if (pollStatus === "authorization_pending") return { status: "pending" as const };
+			if (pollStatus === "slow_down") return { status: "slow_down" as const };
+			if (!polled.response.ok || pollBody.error) {
+				throw new AIError.OAuthError(
+					`Kiro device authorization rejected: ${String(pollStatus ?? polled.response.status)}`,
+					{ kind: "device-auth", provider: PROVIDER, status: polled.response.status },
+				);
+			}
+			return { status: "complete" as const, value: { result: credentials(pollBody), pollBody } };
+		},
+		intervalMilliseconds: intervalMs,
+		expiresInSeconds: expiresMs / 1000,
+		maxAttempts: maxPolls,
+		signal: ctrl.signal,
+	});
+	const { result, pollBody } = completed;
+	let selected: { profileArn: string; profileName: string | undefined };
+	if (typeof pollBody.profileArn === "string") {
+		const parsed = parseKiroProfileArn(pollBody.profileArn);
+		if (!parsed)
+			throw new AIError.OAuthError("Kiro returned an invalid profile ARN", {
+				kind: "validation",
+				provider: PROVIDER,
 			});
-		}
-		const refreshEndpoint =
-			config.kind === "builder-id" ? tokenUrl : `https://prod.${region}.auth.desktop.kiro.dev/refreshToken`;
-		return {
-			...result,
-			kiroClientId: clientId,
-			kiroClientSecret: clientSecret,
-			kiroTokenEndpoint: refreshEndpoint,
-			kiroAuthMethod: config.kind,
-			orgId: selected.profileArn,
-			orgName: selected.profileName,
-		};
+		selected = { profileArn: parsed.profileArn, profileName: undefined };
+	} else {
+		selected = await selectKiroProfile(result.access, resolveKiroApiRegion(region), {
+			fetch: ctrl.fetch,
+			signal: ctrl.signal,
+			onPrompt: ctrl.onPrompt,
+		});
 	}
-	throw new AIError.OAuthError("Kiro device flow timed out", { kind: "timeout", provider: PROVIDER });
+	const refreshEndpoint =
+		config.kind === "builder-id" ? tokenUrl : `https://prod.${region}.auth.desktop.kiro.dev/refreshToken`;
+	return {
+		...result,
+		kiroClientId: clientId,
+		kiroClientSecret: clientSecret,
+		kiroClientSecretExpiresAt: clientSecretExpiresAt,
+		kiroTokenEndpoint: refreshEndpoint,
+		kiroAuthMethod: config.kind,
+		orgId: selected.profileArn,
+		orgName: selected.profileName,
+	};
 }
 
 export async function refreshKiroToken(
@@ -493,6 +525,12 @@ export async function refreshKiroToken(
 		if (!current.kiroClientId || !current.kiroClientSecret) {
 			throw new AIError.OAuthError("Kiro Builder ID refresh requires registered-client credentials", {
 				kind: "configuration",
+				provider: PROVIDER,
+			});
+		}
+		if (current.kiroClientSecretExpiresAt && current.kiroClientSecretExpiresAt <= Date.now()) {
+			throw new AIError.OAuthError("Kiro Builder ID registered client expired; run /login kiro again", {
+				kind: "token-refresh",
 				provider: PROVIDER,
 			});
 		}
@@ -568,6 +606,7 @@ export async function refreshKiroToken(
 		...credentials(response.body, current.refresh),
 		kiroClientId: current.kiroClientId,
 		kiroClientSecret: current.kiroClientSecret,
+		kiroClientSecretExpiresAt: current.kiroClientSecretExpiresAt,
 		kiroTokenEndpoint: endpoint,
 		kiroAuthMethod: method,
 		orgId: current.orgId,

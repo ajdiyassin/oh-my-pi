@@ -934,6 +934,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			apiEndpoint: refreshed.apiEndpoint,
 			orgId: refreshed.orgId,
 			orgName: refreshed.orgName,
+			kiroClientSecretExpiresAt: refreshed.kiroClientSecretExpiresAt,
 		};
 	}
 

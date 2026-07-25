@@ -2953,6 +2953,7 @@ export class AuthStorage {
 			apiEndpoint: credential.apiEndpoint,
 			kiroClientId: persisted?.kiroClientId,
 			kiroClientSecret: persisted?.kiroClientSecret,
+			kiroClientSecretExpiresAt: persisted?.kiroClientSecretExpiresAt,
 			kiroTokenEndpoint: persisted?.kiroTokenEndpoint,
 			kiroAuthMethod: persisted?.kiroAuthMethod,
 		};
@@ -3050,6 +3051,7 @@ export class AuthStorage {
 			authorizedAt: entry.credential.authorizedAt,
 			kiroClientId: entry.credential.kiroClientId,
 			kiroClientSecret: entry.credential.kiroClientSecret,
+			kiroClientSecretExpiresAt: entry.credential.kiroClientSecretExpiresAt,
 			kiroTokenEndpoint: entry.credential.kiroTokenEndpoint,
 			kiroAuthMethod: entry.credential.kiroAuthMethod,
 		});
@@ -5083,6 +5085,8 @@ export class AuthStorage {
 				authorizedAt: result.newCredentials.authorizedAt ?? selection.credential.authorizedAt,
 				kiroClientId: result.newCredentials.kiroClientId ?? selection.credential.kiroClientId,
 				kiroClientSecret: result.newCredentials.kiroClientSecret ?? selection.credential.kiroClientSecret,
+				kiroClientSecretExpiresAt:
+					result.newCredentials.kiroClientSecretExpiresAt ?? selection.credential.kiroClientSecretExpiresAt,
 				kiroTokenEndpoint: result.newCredentials.kiroTokenEndpoint ?? selection.credential.kiroTokenEndpoint,
 				kiroAuthMethod: result.newCredentials.kiroAuthMethod ?? selection.credential.kiroAuthMethod,
 			};
@@ -6302,6 +6306,7 @@ export class AuthStorage {
 				authorizedAt: refreshed.authorizedAt ?? attempted.authorizedAt,
 				kiroClientId: refreshed.kiroClientId ?? attempted.kiroClientId,
 				kiroClientSecret: refreshed.kiroClientSecret ?? attempted.kiroClientSecret,
+				kiroClientSecretExpiresAt: refreshed.kiroClientSecretExpiresAt ?? attempted.kiroClientSecretExpiresAt,
 				kiroTokenEndpoint: refreshed.kiroTokenEndpoint ?? attempted.kiroTokenEndpoint,
 				kiroAuthMethod: refreshed.kiroAuthMethod ?? attempted.kiroAuthMethod,
 			};
