@@ -311,10 +311,10 @@ describe("aws-eventstream", () => {
 		await expectStreamError(streamFrom([prelude]), /headers length|header/i);
 	});
 
-	test("rejects retained buffer overflow while waiting for a frame", async () => {
-		// Never complete a 4-byte length prefix; buffer must still be capped.
+	test("rejects a malformed length before applying the retained-buffer bound", async () => {
+		// Once four bytes are available, the declared frame length is validated first.
 		const chunk = new Uint8Array(MAX_BUFFER_SIZE + 1);
-		await expectStreamError(streamFrom([chunk]), /buffer/i);
+		await expectStreamError(streamFrom([chunk]), /below minimum/i);
 	});
 
 	test("throws on truncated message at end of stream", async () => {

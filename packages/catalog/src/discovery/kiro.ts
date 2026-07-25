@@ -44,6 +44,11 @@ export interface KiroDiscoveryRoute {
 	managementBaseUrl: string;
 }
 
+export interface KiroApiKeyBootstrapResult {
+	route: KiroDiscoveryRoute;
+	payload: unknown;
+}
+
 export interface SanitizedJsonSchema {
 	type?: string;
 	properties?: Record<string, SanitizedJsonSchema>;
@@ -62,7 +67,7 @@ export interface SanitizedKiroModel {
 	modelId: string;
 	modelName: string;
 	description?: string;
-	supportedInputTypes: Array<"TEXT" | "IMAGE">;
+	supportedInputModalities: Array<"TEXT" | "IMAGE">;
 	tokenLimits: { maxInputTokens: number; maxOutputTokens: number };
 	additionalModelRequestFieldsSchema?: SanitizedJsonSchema;
 	promptCaching?: {
@@ -75,7 +80,7 @@ export interface SanitizedKiroModel {
 }
 
 export interface SanitizedKiroModelCatalog {
-	defaultModel: { modelId: string };
+	defaultModel: string;
 	models: SanitizedKiroModel[];
 }
 
@@ -203,20 +208,21 @@ function sanitizeModel(value: unknown): SanitizedKiroModel {
 	const modelId = safeId(raw.modelId, "model.id");
 	const modelName = boundedString(raw.modelName, "model.name", 128);
 
-	if (!Array.isArray(raw.supportedInputTypes) || raw.supportedInputTypes.length === 0) {
-		failSanitize("model.input-types");
+	if (!Array.isArray(raw.supportedInputModalities) || raw.supportedInputModalities.length === 0) {
+		failSanitize("model.input-modalities");
 	}
-	const supportedInputTypes = raw.supportedInputTypes.map(input => {
-		if (input !== "TEXT" && input !== "IMAGE") failSanitize("model.input-type");
+	const supportedInputModalities = raw.supportedInputModalities.map(input => {
+		if (input !== "TEXT" && input !== "IMAGE") failSanitize("model.input-modality");
 		return input;
 	});
-	if (new Set(supportedInputTypes).size !== supportedInputTypes.length) failSanitize("model.input-duplicate");
+	if (new Set(supportedInputModalities).size !== supportedInputModalities.length)
+		failSanitize("model.input-duplicate");
 
 	const rawLimits = record(raw.tokenLimits, "model.token-limits");
 	const model: SanitizedKiroModel = {
 		modelId,
 		modelName,
-		supportedInputTypes,
+		supportedInputModalities,
 		tokenLimits: {
 			maxInputTokens: positiveInteger(rawLimits.maxInputTokens, "model.max-input"),
 			maxOutputTokens: positiveInteger(rawLimits.maxOutputTokens, "model.max-output"),
@@ -257,8 +263,7 @@ function sanitizeModel(value: unknown): SanitizedKiroModel {
  */
 export function sanitizeKiroModelCatalog(value: unknown): SanitizedKiroModelCatalog {
 	const raw = record(value, "top-level.object");
-	const defaultModelRaw = record(raw.defaultModel, "default-model.object");
-	const defaultModelId = safeId(defaultModelRaw.modelId, "default-model.id");
+	const defaultModelId = safeId(raw.defaultModel, "default-model.id");
 	if (!Array.isArray(raw.models) || raw.models.length === 0 || raw.models.length > MAX_MODELS) {
 		failSanitize("models.count");
 	}
@@ -266,7 +271,7 @@ export function sanitizeKiroModelCatalog(value: unknown): SanitizedKiroModelCata
 	const ids = models.map(model => model.modelId);
 	if (new Set(ids).size !== ids.length) failSanitize("models.duplicate-id");
 	if (!ids.includes(defaultModelId)) failSanitize("default-model.missing");
-	return { defaultModel: { modelId: defaultModelId }, models };
+	return { defaultModel: defaultModelId, models };
 }
 
 function schemaError(modelId: string, detail: string): never {
@@ -456,7 +461,7 @@ export function mapKiroModel(model: SanitizedKiroModel, runtimeBaseUrl: string):
 		baseUrl: runtimeBaseUrl,
 		reasoning: requestMetadata.reasoning,
 		...(requestMetadata.thinking ? { thinking: requestMetadata.thinking } : {}),
-		input: model.supportedInputTypes.map(input => (input === "IMAGE" ? "image" : "text")),
+		input: model.supportedInputModalities.map(input => (input === "IMAGE" ? "image" : "text")),
 		cost: { ...ZERO_COST },
 		...(multiplier !== undefined ? { premiumMultiplier: multiplier } : {}),
 		contextWindow: model.tokenLimits.maxInputTokens,
@@ -620,7 +625,7 @@ export async function probeKiroApiKeyBootstrap(options: {
 	token: string;
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
-}): Promise<{ route: KiroDiscoveryRoute; payload: unknown } | null> {
+}): Promise<KiroApiKeyBootstrapResult | null> {
 	const successes: Array<{ apiRegion: string; payload: unknown }> = [];
 	for (const apiRegion of KIRO_BOOTSTRAP_REGIONS) {
 		try {
@@ -633,7 +638,8 @@ export async function probeKiroApiKeyBootstrap(options: {
 				signal: options.signal,
 			});
 			successes.push({ apiRegion, payload });
-		} catch {
+		} catch (cause) {
+			if (options.signal?.aborted) throw cause;
 			// Probe next bootstrap region.
 		}
 	}

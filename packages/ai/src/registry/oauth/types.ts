@@ -12,6 +12,8 @@ export type OAuthCredentials = {
 	apiEndpoint?: string;
 	kiroClientId?: string;
 	kiroClientSecret?: string;
+	/** Unix epoch milliseconds; `0` means the registered client does not expire. */
+	kiroClientSecretExpiresAt?: number;
 	kiroTokenEndpoint?: string;
 	kiroAuthMethod?: "builder-id" | "google" | "github" | "browser";
 	/**
