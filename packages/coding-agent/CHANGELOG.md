@@ -270,10 +270,8 @@
 
 ### Fixed
 
-- Fixed the Docker `natives-builder` stage failing to build releases ≥ 17.1.1: the native audio stack added bindgen (miniaudio needs libclang) and a bundled-opus CMake build (needs cmake + make), none of which were installed in the slim builder image.
-- Fixed `omp usage` duplicating org-less legacy accounts as "no usage data" rows whenever any sibling report carried an organization (mixed pools of pre-org-capture rows and fresh org-scoped logins): an org-less account is now covered by its own org-less report, while org-attributed sibling reports still never count as its coverage.
-- `omp usage` revalidates the broker credential snapshot before rendering: live usage reports were previously paired with a disk-cached account list up to an hour old, so a just-completed re-login (org-less row upserted to org-scoped) rendered as a phantom duplicate until the cache expired.
 - Fixed one failed extension provider registration aborting startup: registrations are now drained in isolation, so a conflicting extension (such as the legacy `omp-provider-kiro` after native activation) fails alone instead of taking down `omp models`, session start, and session resume ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed Kiro model discovery ignoring `KIRO_API_REGION` for `KIRO_API_KEY` credentials: such credentials carry no endpoint, so discovery probed only the two bootstrap regions (a probe set, not an availability allowlist) and a key scoped elsewhere could never discover models, even though the authentication error recommends setting that variable ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ## [17.1.3] - 2026-07-24
 

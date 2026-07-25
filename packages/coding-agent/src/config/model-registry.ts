@@ -34,6 +34,7 @@ import {
 	getVariantAliasSources,
 	resolveVariantAlias,
 } from "@oh-my-pi/pi-catalog/variant-collapse";
+import { kiroRuntimeBaseUrl, validateKiroApiRegion } from "@oh-my-pi/pi-catalog/wire/kiro";
 
 const SPECIAL_MODEL_MANAGER_PROVIDER_IDS: readonly string[] = [
 	"google-antigravity",
@@ -1970,10 +1971,17 @@ export class ModelRegistry {
 									? { type: "oauth", token: credential.token, profileArn: credential.orgId }
 									: undefined;
 							}
+							// `KIRO_API_KEY` credentials carry no endpoint, and the two
+							// bootstrap regions are a probe set, not an availability
+							// allowlist. Honor the region the auth error tells users to
+							// set so a key scoped outside them can still discover models.
+							const envRegion = validateKiroApiRegion(Bun.env.KIRO_API_REGION);
+							const apiEndpoint =
+								credential.apiEndpoint ?? (envRegion ? kiroRuntimeBaseUrl(envRegion) : undefined);
 							return {
 								type: "api_key",
 								token: credential.token,
-								...(credential.apiEndpoint ? { apiEndpoint: credential.apiEndpoint } : {}),
+								...(apiEndpoint ? { apiEndpoint } : {}),
 							};
 						},
 						fetch: this.#fetch,

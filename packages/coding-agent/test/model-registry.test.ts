@@ -2347,7 +2347,10 @@ describe("ModelRegistry", () => {
 				type: "oauth",
 				access: "oauth-access",
 				refresh: "oauth-refresh",
-				expires: Date.now() + 60_000,
+				// Comfortably outside AuthStorage's 60s pre-emptive refresh skew: an
+				// expiry at the boundary makes resolution attempt a real token
+				// refresh, which fails and disables the credential.
+				expires: Date.now() + 3_600_000,
 				orgId: profileArn,
 			});
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
