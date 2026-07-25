@@ -14,6 +14,8 @@
 - Fixed `omp usage` duplicating org-less legacy accounts as "no usage data" rows whenever any sibling report carried an organization (mixed pools of pre-org-capture rows and fresh org-scoped logins): an org-less account is now covered by its own org-less report, while org-attributed sibling reports still never count as its coverage.
 - `omp usage` revalidates the broker credential snapshot before rendering: live usage reports were previously paired with a disk-cached account list up to an hour old, so a just-completed re-login (org-less row upserted to org-scoped) rendered as a phantom duplicate until the cache expired.
 - Fixed one failed extension provider registration aborting startup: registrations are now drained in isolation, so a conflicting extension (such as the legacy `omp-provider-kiro` after native activation) fails alone instead of taking down `omp models`, session start, and session resume ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed `omp usage` still demanding a re-login for accounts the user already recovered: an auto-disabled row stays in SQLite after re-authentication, and the tombstone filter matched on disable cause alone, so the restored account was rendered as disabled alongside its live report forever. Tombstones are now suppressed against the live credential pool.
+- Fixed `omp usage` printing `No credentials found` and exiting when an auto-disabled row was the user's only credential, so the tombstone explanation never reached text output (`--json` did include it). Actionable tombstones now also fix the provider header count, which previously read `0 accounts` directly above the disabled account it listed.
 
 ## [17.1.3] - 2026-07-24
 

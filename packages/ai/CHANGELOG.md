@@ -21,6 +21,7 @@
 
 - Fixed native Kiro streams ignoring the terminal `stopReason`: the live runtime reports it on `metadataEvent` rather than `assistantResponseEvent`, so every stream previously fell back to `stop` and `MAX_TOKENS` never mapped to `length`. The live `meteringEvent` billing frame (`{ unit, unitPlural, usage }`, fractional credits) is now recognized instead of dropped as unknown, and never contributes to token usage ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 - Fixed the legacy `omp-provider-kiro` extension being able to shadow native Kiro: the conflict guard now covers OAuth provider registration in addition to custom-API registration, since extensions register in arbitrary order and both OAuth refresh paths consult the custom-provider map before the built-in registry ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed `ANTHROPIC_OAUTH_GRANT_TTL_MS` being re-exported from the OAuth barrel through the Anthropic OAuth flow module, which closed the import cycle `providers/anthropic -> stream -> registry -> oauth -> oauth/anthropic -> providers/anthropic`. Load order then decided whether `claudeCodeVersion` was initialized, so importing `providers/anthropic` first threw `ReferenceError: Cannot access 'claudeCodeVersion' before initialization` — intermittently taking unrelated suites down under parallel test execution, with a different victim each run. The constant now lives in a dependency-free leaf module.
 
 ## [17.1.3] - 2026-07-24
 

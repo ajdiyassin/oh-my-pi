@@ -13,8 +13,8 @@ import type {
 	OAuthProviderInterface,
 } from "./types";
 
-export * from "./anthropic";
 export * from "./device-code";
+export * from "./grant-ttl";
 export type * from "./types";
 
 const builtInOAuthProviders: OAuthProviderInfo[] = PROVIDER_REGISTRY.filter(

@@ -559,10 +559,37 @@ function formatReloginDeadline(
  * Tombstones worth a row in `omp usage`: OAuth credentials torn down
  * automatically (refresh failure, upstream invalidation). Rows the user
  * replaced or deleted deliberately are lifecycle noise, not lost capacity.
+ *
+ * `activeIdentities` suppresses tombstones the user has already recovered:
+ * re-login inserts a new row and leaves the disabled one in SQLite forever, so
+ * a cause-only predicate would keep demanding a re-login the user already did.
  */
-function isActionableDisable(summary: DisabledCredentialSummary): boolean {
+function isActionableDisable(summary: DisabledCredentialSummary, activeIdentities?: ReadonlySet<string>): boolean {
 	if (summary.type !== "oauth") return false;
-	return !/^(replaced by|deleted by user)/i.test(summary.cause);
+	if (/^(replaced by|deleted by user)/i.test(summary.cause)) return false;
+	const key = disabledIdentityKey(summary);
+	return key === undefined || !activeIdentities?.has(key);
+}
+
+/**
+ * Provider-scoped identity key shared by tombstones and live accounts. Both
+ * sides prefer `email`, then `accountId`, matching how each side labels itself;
+ * a tombstone with neither can never be matched and stays visible.
+ */
+function disabledIdentityKey(summary: DisabledCredentialSummary | UsageAccountIdentity): string | undefined {
+	const base = summary.email ?? summary.accountId;
+	return base ? `${summary.provider.toLowerCase()}\u0000${base}` : undefined;
+}
+
+/** Identity keys of credentials still live, used to retire recovered tombstones. */
+function activeAccountIdentities(accounts: readonly UsageAccountIdentity[]): Set<string> {
+	const keys = new Set<string>();
+	for (const account of accounts) {
+		if (account.type !== "oauth") continue;
+		const key = disabledIdentityKey(account);
+		if (key) keys.add(key);
+	}
+	return keys;
 }
 
 /** Human-sized disable cause: the upstream `error_description` when embedded, else the first clause. */
@@ -608,9 +635,10 @@ export function formatUsageBreakdown(
 		list.push(account);
 		unreportedByProvider.set(account.provider, list);
 	}
+	const activeIdentities = activeAccountIdentities(accounts);
 	const disabledByProvider = new Map<string, DisabledCredentialSummary[]>();
 	for (const summary of disabled) {
-		if (!isActionableDisable(summary)) continue;
+		if (!isActionableDisable(summary, activeIdentities)) continue;
 		const list = disabledByProvider.get(summary.provider) ?? [];
 		list.push(summary);
 		disabledByProvider.set(summary.provider, list);
@@ -628,7 +656,11 @@ export function formatUsageBreakdown(
 	for (const provider of providers) {
 		const providerReports = reportsByProvider.get(provider) ?? [];
 		const providerUnreported = unreportedByProvider.get(provider) ?? [];
-		const accountCount = providerReports.length + providerUnreported.length;
+		const providerDisabled = disabledByProvider.get(provider) ?? [];
+		// Disabled rows get their own section lines, so the header count must
+		// include them — otherwise a tombstone-only provider reads "0 accounts"
+		// immediately above the account it just listed.
+		const accountCount = providerReports.length + providerUnreported.length + providerDisabled.length;
 		lines.push("");
 		lines.push(
 			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountCount === 1 ? "account" : "accounts"}`)}`,
@@ -664,7 +696,7 @@ export function formatUsageBreakdown(
 			lines.push(`  ${chalk.dim("○")} ${chalk.dim(`${label} — no usage data`)}`);
 		}
 
-		for (const summary of disabledByProvider.get(provider) ?? []) {
+		for (const summary of providerDisabled) {
 			const label = disabledIdentityLabel(summary, redaction);
 			const ago = summary.disabledAtMs !== undefined ? ` ${formatDuration(nowMs - summary.disabledAtMs)} ago` : "";
 			lines.push(
@@ -990,6 +1022,12 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			accounts = accounts.filter(account => account.provider.toLowerCase() === wanted);
 			disabled = disabled.filter(summary => summary.provider.toLowerCase() === wanted);
 		}
+		// Tombstones the user already recovered by re-logging in stay in SQLite
+		// forever; suppress them against the live pool so `omp usage` never keeps
+		// demanding a re-login that already happened.
+		const actionableDisabled = disabled.filter(summary =>
+			isActionableDisable(summary, activeAccountIdentities(accounts)),
+		);
 
 		const redaction = cmd.redact
 			? buildRedactionMap(collectIdentityStrings(filteredReports, accounts, disabled))
@@ -1018,7 +1056,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				const stats = computeProviderWindowStats(filteredReports.filter(peer => peer.provider === report.provider));
 				if (stats.length > 0) capacity[report.provider] = stats;
 			}
-			let disabledForJson = disabled.filter(isActionableDisable);
+			let disabledForJson = actionableDisabled;
 			if (redaction) {
 				disabledForJson = disabledForJson.map(summary => ({
 					...summary,
@@ -1039,7 +1077,10 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 
-		if (filteredReports.length === 0 && accounts.length === 0) {
+		// Actionable tombstones are the whole point of the disabled section: a
+		// user whose only credential was auto-disabled must still see why, so
+		// they count as output rather than falling into the empty state.
+		if (filteredReports.length === 0 && accounts.length === 0 && actionableDisabled.length === 0) {
 			const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
 			// Credentials exist but every one is for a provider without a usage
 			// endpoint — say so rather than implying nothing is logged in.
