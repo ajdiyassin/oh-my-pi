@@ -7,6 +7,8 @@
 - Added the unreachable native Kiro authentication leaf with API-key route validation, browser/device OAuth, profile selection, refresh-state persistence, and broker-safe credential redaction for the later activation phase ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 - Added privacy-safe Kiro Phase 0 protocol fixtures and independent Amazon EventStream replay coverage for native provider development ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 - Added the unreachable native Kiro runtime leaf with capture-derived request transforms, adaptive reasoning, decoded EventStream normalization, per-ID tool assembly, typed errors, isolated pre-output recovery, provider hooks, response timing, and usage metrics ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added native Kiro activation: `kiro-api` is a built-in API with lazy provider registration and exhaustive stream dispatch, and `kiro/<model-id>` is natively selectable with dynamic `ListAvailableModels` discovery ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added profile-scoped Kiro quota usage (`GetUsageLimits` on `KiroControlPlaneBearerService`), normalizing each credit/request bucket into `UsageReport`/`UsageLimit` with reset time and response-stated overage/bonus notes. OAuth-only; API-key credentials report no usage, and neither the full profile ARN nor upstream account identifiers reach reports ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ### Changed
 
@@ -14,6 +16,11 @@
 - OAuth logins now stamp `authorizedAt` (epoch ms of the interactive login) on the stored credential, and every refresh-persist path preserves it. Anthropic expires the whole OAuth grant family ~30 days after authorization regardless of refresh-token rotation (observed as `invalid_grant: "Refresh token expired"` on the latest rotated token, exactly 30 days after login, across four production accounts), so the login anchor is what makes re-login deadlines computable. Exported `ANTHROPIC_OAUTH_GRANT_TTL_MS` alongside the anthropic OAuth flow.
 - Added `GET /v1/credentials/disabled` to the auth broker and `AuthBrokerClient.listDisabledCredentials`: disabled-credential tombstones (`DisabledCredentialSummary` — identity, verbatim disable cause, disable timestamp; never token material) so auto-disabled accounts stay visible to clients instead of silently vanishing from the snapshot. `AuthStorage.listDisabledCredentials` serves the same data locally from SQLite; clients of brokers predating the endpoint get an empty list (404 mapped, no error).
 - Added `AuthStorage.revalidateCredentials()` and the optional `AuthCredentialStore.refreshSnapshot` hook: remote broker stores re-fetch `GET /v1/snapshot` on demand so callers pairing live per-credential data with stored identities (`omp usage`) never render against the up-to-an-hour-stale disk-cached snapshot; local SQLite stores are always current and only reload.
+
+### Fixed
+
+- Fixed native Kiro streams ignoring the terminal `stopReason`: the live runtime reports it on `metadataEvent` rather than `assistantResponseEvent`, so every stream previously fell back to `stop` and `MAX_TOKENS` never mapped to `length`. The live `meteringEvent` billing frame (`{ unit, unitPlural, usage }`, fractional credits) is now recognized instead of dropped as unknown, and never contributes to token usage ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed the legacy `omp-provider-kiro` extension being able to shadow native Kiro: the conflict guard now covers OAuth provider registration in addition to custom-API registration, since extensions register in arbitrary order and both OAuth refresh paths consult the custom-provider map before the built-in registry ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ## [17.1.3] - 2026-07-24
 
