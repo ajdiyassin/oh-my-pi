@@ -26,6 +26,9 @@
 - Corrected Windows shell resolution errors to identify the active global, project, overlay, or runtime source for `shellPath` instead of directing every user to the retired `settings.json` file ([#6579](https://github.com/can1357/oh-my-pi/issues/6579)).
 - Contained timed-out child lifecycle rejections so `ptree` callers cannot leak an unhandled `TimeoutError` after settling ([#6635](https://github.com/can1357/oh-my-pi/issues/6635)).
 - Fixed an invalid configured `shellPath` being silently masked whenever an earlier caller had already resolved a shell in the same process; the guidance error now surfaces regardless of cache state.
+### Added
+
+- Added a shared bounded strict-UTF-8 JSON response reader for provider integrations.
 
 ## [17.0.9] - 2026-07-23
 

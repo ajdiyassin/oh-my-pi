@@ -45,6 +45,7 @@ function claudeAdaptiveModel(overrides: Record<string, unknown> = {}) {
 		modelId: "claude-sonnet-5",
 		modelName: "claude-sonnet-5",
 		supportedInputModalities: ["TEXT", "IMAGE"],
+		supportedOutputModalities: ["TEXT"],
 		tokenLimits: { maxInputTokens: 1_000_000, maxOutputTokens: 64_000 },
 		promptCaching: {
 			supportsPromptCaching: true,
@@ -87,6 +88,7 @@ function gptReasoningModel(overrides: Record<string, unknown> = {}) {
 		modelId: "gpt-5.6-sol",
 		modelName: "gpt-5.6-sol",
 		supportedInputModalities: ["TEXT", "IMAGE"],
+		supportedOutputModalities: ["TEXT"],
 		tokenLimits: { maxInputTokens: 272_000, maxOutputTokens: 128_000 },
 		additionalModelRequestFieldsSchema: {
 			type: "object",
@@ -116,6 +118,7 @@ function autoModel(overrides: Record<string, unknown> = {}) {
 		modelId: "auto",
 		modelName: "auto",
 		supportedInputModalities: ["TEXT", "IMAGE"],
+		supportedOutputModalities: ["TEXT"],
 		tokenLimits: { maxInputTokens: 1_000_000, maxOutputTokens: 64_000 },
 		rateMultiplier: 1,
 		rateUnit: "Credit",
@@ -245,6 +248,7 @@ describe("Kiro sanitizer and schema-derived mapping", () => {
 					modelId: `m${i}`,
 					modelName: `m${i}`,
 					supportedInputModalities: ["TEXT"],
+					supportedOutputModalities: ["TEXT"],
 					tokenLimits: { maxInputTokens: 1, maxOutputTokens: 1 },
 				})),
 			}),
@@ -258,11 +262,32 @@ describe("Kiro sanitizer and schema-derived mapping", () => {
 						modelId: "x",
 						modelName: "x",
 						supportedInputModalities: ["TEXT"],
+						supportedOutputModalities: ["TEXT"],
 						tokenLimits: { maxInputTokens: 0, maxOutputTokens: 1 },
 					},
 				],
 			}),
 		).toThrow("model.max-input");
+	});
+
+	it("requires text output but tolerates additive output modalities", () => {
+		expect(() =>
+			sanitizeKiroModelCatalog(sampleCatalog([autoModel({ supportedOutputModalities: undefined })])),
+		).toThrow("model.output-modalities");
+		expect(() =>
+			sanitizeKiroModelCatalog(sampleCatalog([autoModel({ supportedOutputModalities: ["IMAGE"] })])),
+		).toThrow("model.output-modalities");
+		const additive = sanitizeKiroModelCatalog(
+			sampleCatalog([autoModel({ supportedOutputModalities: ["TEXT", "IMAGE"] })]),
+		);
+		expect(additive.models.map(entry => entry.modelId)).toEqual(["auto"]);
+	});
+
+	it("rejects prototype-polluting required entries", () => {
+		const schema = JSON.parse('{"type":"object","required":["__proto__"]}') as Record<string, unknown>;
+		expect(() =>
+			sanitizeKiroModelCatalog(sampleCatalog([autoModel({ additionalModelRequestFieldsSchema: schema })])),
+		).toThrow("schema.required-value");
 	});
 
 	it("rejects malformed recognized schemas and unknown request-schema families", () => {
@@ -291,6 +316,14 @@ describe("Kiro sanitizer and schema-derived mapping", () => {
 		if (!gptRoot) throw new Error("missing gpt schema");
 		gptRoot.anyOf = [];
 		expect(() => mapKiroModelCatalog(extraKeyword, RUNTIME_US)).toThrow("gpt.root");
+
+		const prototypeSchema = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string"}}}') as Record<
+			string,
+			unknown
+		>;
+		expect(() =>
+			sanitizeKiroModelCatalog(sampleCatalog([autoModel({ additionalModelRequestFieldsSchema: prototypeSchema })])),
+		).toThrow("schema.property-name");
 	});
 });
 
@@ -367,20 +400,32 @@ describe("Kiro management client", () => {
 		});
 	});
 
-	it("rejects oversized management response bodies", async () => {
-		const fetchImpl: typeof fetch = Object.assign(
-			async () => new Response("x".repeat(1024 * 1024 + 1), { status: 200 }),
-			{ preconnect() {} },
-		);
-		await expect(
+	it("maps bounded-read failures onto target-scoped management messages", async () => {
+		const withPreconnect = (body: string | Uint8Array | null) =>
+			Object.assign(async () => new Response(body, { status: 200 }), { preconnect() {} }) as typeof fetch;
+		const call = (fetchImpl: typeof fetch) =>
 			kiroManagementRequest({
 				apiRegion: "us-east-1",
 				token: "ksk_test",
 				target: "ListAvailableModels",
 				body: { origin: "KIRO_CLI" },
 				fetch: fetchImpl,
-			}),
-		).rejects.toThrow("invalid response size");
+			});
+		await expect(call(withPreconnect("x".repeat(1024 * 1024 + 1)))).rejects.toThrow(
+			"ListAvailableModels: invalid response size",
+		);
+		await expect(call(withPreconnect(""))).rejects.toThrow("ListAvailableModels: invalid response size");
+		await expect(call(withPreconnect(null))).rejects.toThrow("ListAvailableModels: missing response body");
+		await expect(
+			call(withPreconnect(Uint8Array.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]))),
+		).rejects.toThrow("ListAvailableModels: invalid JSON");
+		const transportFailure = Object.assign(
+			async () => {
+				throw new Error("socket closed");
+			},
+			{ preconnect() {} },
+		) as typeof fetch;
+		await expect(call(transportFailure)).rejects.toThrow("socket closed");
 	});
 });
 

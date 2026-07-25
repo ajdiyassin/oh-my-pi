@@ -24,6 +24,7 @@ function modelCatalog() {
 				modelId: "auto",
 				modelName: "Auto",
 				supportedInputModalities: ["TEXT"],
+				supportedOutputModalities: ["TEXT"],
 				tokenLimits: { maxInputTokens: 200_000, maxOutputTokens: 32_000 },
 			},
 		],
@@ -63,6 +64,34 @@ describe("isolated Kiro authentication", () => {
 				{ fetch: async () => new Response(oversized) },
 			),
 		).rejects.toThrow("exceeded size limit");
+		await expect(
+			refreshKiroToken(
+				{
+					access: "old",
+					refresh: "refresh",
+					expires: 0,
+					kiroClientId: "client",
+					kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
+					kiroAuthMethod: "browser",
+				},
+				{
+					fetch: async () => new Response(Uint8Array.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])),
+				},
+			),
+		).rejects.toThrow("invalid JSON");
+		await expect(
+			refreshKiroToken(
+				{
+					access: "old",
+					refresh: "refresh",
+					expires: 0,
+					kiroClientId: "client",
+					kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
+					kiroAuthMethod: "browser",
+				},
+				{ fetch: async () => new Response("") },
+			),
+		).rejects.toThrow("invalid JSON");
 
 		const controller = new AbortController();
 		await expect(
@@ -86,13 +115,24 @@ describe("isolated Kiro authentication", () => {
 				fetch: async () => json({ profiles: [{ arn: profileArn, profileName: "Example" }] }),
 			}),
 		).toEqual({ profileArn, profileName: "Example" });
+		let profilePrompt = "";
 		expect(
 			await selectKiroProfile("token", "us-east-1", {
 				fetch: async () =>
-					json({ profiles: [{ arn: profileArn }, { arn: profileArn.replace("example", "other") }] }),
-				onPrompt: async () => "2",
+					json({
+						profiles: [
+							{ arn: profileArn, profileName: "Primary" },
+							{ arn: profileArn.replace("example", "other") },
+						],
+					}),
+				onPrompt: async prompt => {
+					profilePrompt = prompt.message;
+					return "2";
+				},
 			}),
 		).toEqual({ profileArn: profileArn.replace("example", "other"), profileName: undefined });
+		expect(profilePrompt).toBe("Select a Kiro profile:\n1. Primary\n2. profile in us-east-1");
+		expect(profilePrompt).not.toContain("111122223333");
 		await expect(
 			selectKiroProfile("token", "us-east-1", { fetch: async () => json({ profiles: [{ arn: "invalid" }] }) }),
 		).rejects.toBeInstanceOf(AIError.OAuthError);
