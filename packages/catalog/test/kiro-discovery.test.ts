@@ -203,11 +203,6 @@ describe("Kiro sanitizer and schema-derived mapping", () => {
 				effortMap: { minimal: "low" },
 				supportsDisplay: true,
 			},
-			kiroPromptCaching: {
-				supportsPromptCaching: true,
-				maximumCacheCheckpointsPerRequest: 4,
-				minimumTokensPerCacheCheckpoint: 1024,
-			},
 		});
 
 		const gpt = models.find(model => model.id === "gpt-5.6-sol");

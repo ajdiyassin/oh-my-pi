@@ -459,7 +459,6 @@ export function mapKiroModel(model: SanitizedKiroModel, runtimeBaseUrl: string):
 		input: model.supportedInputTypes.map(input => (input === "IMAGE" ? "image" : "text")),
 		cost: { ...ZERO_COST },
 		...(multiplier !== undefined ? { premiumMultiplier: multiplier } : {}),
-		...(model.promptCaching ? { kiroPromptCaching: { ...model.promptCaching } } : {}),
 		contextWindow: model.tokenLimits.maxInputTokens,
 		maxTokens: requestMetadata.maxTokens,
 	};

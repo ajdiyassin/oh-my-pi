@@ -181,6 +181,19 @@ describe("aws-eventstream", () => {
 		]);
 	});
 
+	test("accepts a large chunk containing multiple complete bounded frames", async () => {
+		const payload = new Uint8Array(13 * 1024 * 1024);
+		const first = encodeFrame({ ":event-type": "first" }, payload);
+		const second = encodeFrame({ ":event-type": "second" }, payload);
+		const merged = new Uint8Array(first.length + second.length);
+		merged.set(first, 0);
+		merged.set(second, first.length);
+		expect(merged.length).toBeGreaterThan(MAX_BUFFER_SIZE);
+
+		const collected = await collect(streamFrom([merged]));
+		expect(collected.map(message => message.headers[":event-type"])).toEqual(["first", "second"]);
+	});
+
 	test("decodes multiple frames with arbitrary chunk boundaries", async () => {
 		const frames = [
 			encodeFrame({ ":event-type": "a" }, new TextEncoder().encode("1")),
