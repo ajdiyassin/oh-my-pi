@@ -30,10 +30,16 @@ export interface KiroToolSpec {
 	};
 }
 
+export interface KiroImageBlock {
+	format: "jpeg" | "png" | "gif" | "webp";
+	source: { bytes: string };
+}
+
 export interface KiroUserInputMessage {
 	content: string;
 	modelId: string;
 	origin: "KIRO_CLI";
+	images?: KiroImageBlock[];
 	userInputMessageContext?: {
 		toolResults?: KiroToolResult[];
 		tools?: KiroToolSpec[];
@@ -63,6 +69,7 @@ export type KiroGptRequestFields = {
 export type KiroModelRequestFields = KiroAnthropicRequestFields | KiroGptRequestFields;
 
 export interface KiroRequest {
+	agentMode: "vibe";
 	conversationState: {
 		chatTriggerType: "MANUAL";
 		agentTaskType: "vibe";

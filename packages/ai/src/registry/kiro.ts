@@ -1,5 +1,4 @@
 import * as AIError from "../error";
-import { loginKiroBrowser, loginKiroDevice, refreshKiroToken, validateKiroApiKey } from "./oauth/kiro";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
 
@@ -14,6 +13,7 @@ export const kiroProvider = {
 	name: "Kiro (experimental)",
 	envKeys: "KIRO_API_KEY",
 	login: async (callbacks: OAuthLoginCallbacks) => {
+		const { loginKiroBrowser, loginKiroDevice, validateKiroApiKey } = await import("./oauth/kiro");
 		const method = await callbacks.onPrompt({
 			message: "Choose Kiro authentication: 1) Browser OAuth 2) AWS Builder ID 3) Google 4) GitHub 5) API key",
 			placeholder: "1",
@@ -63,7 +63,10 @@ export const kiroProvider = {
 			scopes: KIRO_SCOPES,
 		});
 	},
-	refreshToken: refreshKiroToken,
+	refreshToken: async (credentials: OAuthCredentials) => {
+		const { refreshKiroToken } = await import("./oauth/kiro");
+		return refreshKiroToken(credentials);
+	},
 	getApiKey: (credentials: OAuthCredentials) => {
 		if (!credentials.orgId) {
 			throw new AIError.OAuthError("Kiro OAuth credentials are missing the selected profile", {
@@ -74,5 +77,4 @@ export const kiroProvider = {
 		return JSON.stringify({ token: credentials.access, profileArn: credentials.orgId });
 	},
 	credentialPolicy: "replace",
-	showInLoginList: false,
 } as const satisfies ProviderDefinition;

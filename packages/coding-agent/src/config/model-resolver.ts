@@ -23,7 +23,7 @@ import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
+import { DEFAULT_MODEL_PER_PROVIDER, resolveKiroModelAlias } from "@oh-my-pi/pi-catalog/provider-models";
 import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -431,6 +431,14 @@ export function resolveProviderModelReference(
 		const aliased = index.get(`${normalizedProvider}\u0000${variantAliasId.toLowerCase()}`);
 		if (aliased) {
 			return aliased;
+		}
+	}
+
+	if (normalizedProvider === "kiro") {
+		const legacyId = resolveKiroModelAlias(modelId.trim());
+		if (legacyId !== modelId.trim()) {
+			const aliased = index.get(`${normalizedProvider}\u0000${legacyId.toLowerCase()}`);
+			if (aliased) return aliased;
 		}
 	}
 

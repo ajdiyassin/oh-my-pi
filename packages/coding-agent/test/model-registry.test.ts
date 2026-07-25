@@ -2238,6 +2238,119 @@ describe("ModelRegistry", () => {
 		});
 	});
 
+	describe("native Kiro model lifecycle", () => {
+		const kiroCatalog = (modelId: string) => ({
+			defaultModel: modelId,
+			models: [
+				{
+					modelId,
+					modelName: modelId,
+					supportedInputModalities: ["TEXT", "IMAGE"],
+					supportedOutputModalities: ["TEXT", "FUTURE_ADDITIVE_VALUE"],
+					tokenLimits: { maxInputTokens: 200_000, maxOutputTokens: 32_000 },
+				},
+			],
+		});
+		const kiroCachedModel = (id: string) =>
+			buildModel({
+				id,
+				name: id,
+				api: "kiro-api",
+				provider: "kiro",
+				baseUrl: "https://runtime.us-east-1.kiro.dev/",
+				reasoning: false,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 32_000,
+			});
+
+		test("loads fresh authoritative cache at cold startup without auth lookup", () => {
+			const registry = readonlyRegistry(
+				{ providers: {} },
+				{
+					seedCache: dbPath =>
+						writeModelCache("kiro", Date.now(), [kiroCachedModel("cached-kiro-model")], true, "", dbPath),
+				},
+			);
+			expect(registry.find("kiro", "cached-kiro-model")?.api).toBe("kiro-api");
+		});
+
+		test("discovers an environment API key through bootstrap routing", async () => {
+			const original = Bun.env.KIRO_API_KEY;
+			Bun.env.KIRO_API_KEY = "ksk_env";
+			try {
+				const regions: string[] = [];
+				const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+					fetch: async (input, init) => {
+						const url = String(input);
+						regions.push(url);
+						expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ksk_env");
+						expect(JSON.parse(String(init?.body))).toEqual({ origin: "KIRO_CLI" });
+						return url.includes("us-east-1")
+							? new Response(JSON.stringify(kiroCatalog("env-live-model")), { status: 200 })
+							: new Response("unavailable", { status: 403 });
+					},
+				});
+				await registry.refreshProvider("kiro", "online");
+				expect(regions).toEqual([
+					"https://management.us-east-1.kiro.dev/",
+					"https://management.eu-central-1.kiro.dev/",
+				]);
+				expect(registry.find("kiro", "env-live-model")?.baseUrl).toBe("https://runtime.us-east-1.kiro.dev/");
+			} finally {
+				if (original === undefined) delete Bun.env.KIRO_API_KEY;
+				else Bun.env.KIRO_API_KEY = original;
+			}
+		});
+
+		test("discovers API-key credentials and forced refresh retains the last safe cache on failure", async () => {
+			await authStorage.set("kiro", {
+				type: "api_key",
+				key: "ksk_test",
+				apiEndpoint: "https://runtime.us-east-1.kiro.dev/",
+			});
+			let successful = true;
+			let calls = 0;
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				fetch: async (_input, init) => {
+					calls++;
+					expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ksk_test");
+					expect(JSON.parse(String(init?.body))).toEqual({ origin: "KIRO_CLI" });
+					return successful
+						? new Response(JSON.stringify(kiroCatalog("api-key-live-model")), { status: 200 })
+						: new Response("unavailable", { status: 503 });
+				},
+			});
+			await registry.refreshProvider("kiro", "online");
+			expect(registry.find("kiro", "api-key-live-model")?.api).toBe("kiro-api");
+			successful = false;
+			await registry.refreshProvider("kiro", "online");
+			expect(calls).toBe(2);
+			expect(registry.find("kiro", "api-key-live-model")?.api).toBe("kiro-api");
+		});
+
+		test("discovers OAuth credentials with the selected profile ARN", async () => {
+			const profileArn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/example";
+			await authStorage.set("kiro", {
+				type: "oauth",
+				access: "oauth-access",
+				refresh: "oauth-refresh",
+				expires: Date.now() + 60_000,
+				orgId: profileArn,
+			});
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				fetch: async (_input, init) => {
+					expect(new Headers(init?.headers).get("authorization")).toBe("Bearer oauth-access");
+					expect(JSON.parse(String(init?.body))).toEqual({ origin: "KIRO_CLI", profileArn });
+					return new Response(JSON.stringify(kiroCatalog("oauth-live-model")), { status: 200 });
+				},
+			});
+			await registry.refreshProvider("kiro", "online");
+			expect(registry.find("kiro", "oauth-live-model")?.baseUrl).toBe("https://runtime.us-east-1.kiro.dev/");
+		});
+	});
+
 	describe("effort-tier variant collapsing", () => {
 		let kiroTwins: ModelRegistry;
 		let antigravityOverride: ModelRegistry;

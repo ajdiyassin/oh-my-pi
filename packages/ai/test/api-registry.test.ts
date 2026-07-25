@@ -21,6 +21,15 @@ describe("custom API registry", () => {
 		);
 	});
 
+	test("rejects the legacy Kiro extension with an actionable migration", () => {
+		for (const api of ["kiro", "kiro-api"]) {
+			expect(() => registerCustomApi(api, streamSimple, "omp-provider-kiro")).toThrow(
+				"Kiro is built into this OMP version. Remove/disable the omp-provider-kiro extension and restart OMP; your OMP-managed Kiro login can then be configured with /login kiro.",
+			);
+		}
+		expect(() => registerCustomApi("unrelated-custom-api", streamSimple, "another-extension")).not.toThrow();
+	});
+
 	test("unregisterCustomApis removes only matching source registrations", () => {
 		registerCustomApi("custom-a", streamSimple, "ext-a");
 		registerCustomApi("custom-b", streamSimple, "ext-b");

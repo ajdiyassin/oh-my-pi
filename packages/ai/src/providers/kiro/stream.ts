@@ -26,7 +26,7 @@ import { KiroToolAssembler } from "./tool-assembler";
 import { transformKiroRequest } from "./transform";
 import type { KiroOptions, KiroStreamCredential, KiroUsageMetrics } from "./types";
 
-const KIRO_RUNTIME_TARGET = "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
+const KIRO_RUNTIME_TARGET = "KiroRuntimeService.GenerateAssistantResponse";
 const KIRO_USER_AGENT = "oh-my-pi/kiro-api";
 const MAX_PRE_OUTPUT_RECOVERY_ATTEMPTS = 1;
 const INLINE_THINKING_TAGS: ReadonlyArray<readonly [string, string]> = [
