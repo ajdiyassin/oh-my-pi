@@ -114,7 +114,7 @@ function buildLimit(
 	entry: Record<string, unknown>,
 	index: number,
 	params: UsageFetchParams,
-	profileArn: string,
+	profileSegment: string,
 	fallbackReset: number | undefined,
 	overageStatus: string | undefined,
 	planTitle: string | undefined,
@@ -136,9 +136,8 @@ function buildLimit(
 		label: boundedLabel(entry.displayNamePlural, boundedLabel(entry.displayName, resourceType ?? "Usage")),
 		scope: {
 			provider: params.provider,
-			// The selected profile is the quota scope. Only the trailing profile
-			// segment is exposed so the full ARN never reaches logs or displays.
-			orgId: profileArn.slice(profileArn.lastIndexOf("/") + 1),
+			// The selected profile is the quota scope, reduced to its trailing segment.
+			orgId: profileSegment,
 			...(planTitle ? { tier: planTitle } : {}),
 		},
 		window: {
@@ -189,11 +188,14 @@ async function fetchKiroUsage(params: UsageFetchParams, ctx: UsageFetchContext):
 			? overageConfiguration.overageStatus
 			: undefined;
 	const fallbackReset = resetMillis(payload.nextDateReset);
+	// Display-safe quota identity. The full ARN embeds the AWS account id and
+	// never leaves this function.
+	const profileSegment = parsed.profileArn.slice(parsed.profileArn.lastIndexOf("/") + 1);
 
 	const limits = breakdown
 		.map((entry, index) =>
 			isRecord(entry)
-				? buildLimit(entry, index, params, parsed.profileArn, fallbackReset, overageStatus, planTitle)
+				? buildLimit(entry, index, params, profileSegment, fallbackReset, overageStatus, planTitle)
 				: null,
 		)
 		.filter((limit): limit is UsageLimit => limit !== null);
@@ -201,7 +203,18 @@ async function fetchKiroUsage(params: UsageFetchParams, ctx: UsageFetchContext):
 
 	// `raw` is intentionally omitted: the upstream payload carries account/user
 	// identifiers that must stay out of reports and diagnostics.
-	return { provider: params.provider, fetchedAt: Date.now(), limits };
+	//
+	// `metadata.orgId` is stamped explicitly with the same trailing profile
+	// segment the limits expose. Leaving metadata unset would let
+	// `AuthStorage.#fetchUsageUncached` backfill it from `credential.orgId` —
+	// the full profile ARN, including the AWS account id — which `omp usage`
+	// then prints in the account header and emits in `--json`.
+	return {
+		provider: params.provider,
+		fetchedAt: Date.now(),
+		limits,
+		metadata: { orgId: profileSegment },
+	};
 }
 
 export const kiroUsageProvider: UsageProvider = {

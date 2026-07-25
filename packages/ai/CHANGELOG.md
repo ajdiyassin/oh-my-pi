@@ -99,14 +99,12 @@
 ### Changed
 
 - Hardened the shared Amazon EventStream decoder with bounded frames, headers, and retained buffers plus strict malformed-header handling for Kiro and Bedrock streams ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- OAuth logins now stamp `authorizedAt` (epoch ms of the interactive login) on the stored credential, and every refresh-persist path preserves it. Anthropic expires the whole OAuth grant family ~30 days after authorization regardless of refresh-token rotation (observed as `invalid_grant: "Refresh token expired"` on the latest rotated token, exactly 30 days after login, across four production accounts), so the login anchor is what makes re-login deadlines computable. Exported `ANTHROPIC_OAUTH_GRANT_TTL_MS` alongside the anthropic OAuth flow.
-- Added `GET /v1/credentials/disabled` to the auth broker and `AuthBrokerClient.listDisabledCredentials`: disabled-credential tombstones (`DisabledCredentialSummary` — identity, verbatim disable cause, disable timestamp; never token material) so auto-disabled accounts stay visible to clients instead of silently vanishing from the snapshot. `AuthStorage.listDisabledCredentials` serves the same data locally from SQLite; clients of brokers predating the endpoint get an empty list (404 mapped, no error).
-- Added `AuthStorage.revalidateCredentials()` and the optional `AuthCredentialStore.refreshSnapshot` hook: remote broker stores re-fetch `GET /v1/snapshot` on demand so callers pairing live per-credential data with stored identities (`omp usage`) never render against the up-to-an-hour-stale disk-cached snapshot; local SQLite stores are always current and only reload.
 
 ### Fixed
 
 - Fixed native Kiro streams ignoring the terminal `stopReason`: the live runtime reports it on `metadataEvent` rather than `assistantResponseEvent`, so every stream previously fell back to `stop` and `MAX_TOKENS` never mapped to `length`. The live `meteringEvent` billing frame (`{ unit, unitPlural, usage }`, fractional credits) is now recognized instead of dropped as unknown, and never contributes to token usage ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 - Fixed the legacy `omp-provider-kiro` extension being able to shadow native Kiro: the conflict guard now covers OAuth provider registration in addition to custom-API registration, since extensions register in arbitrary order and both OAuth refresh paths consult the custom-provider map before the built-in registry ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed Kiro usage reports leaking the full profile ARN: the provider returned no `metadata`, so `AuthStorage` backfilled `metadata.orgId` from the credential's `orgId` — the complete ARN including the AWS account id — which `omp usage` then printed in the account header and emitted in `--json`, defeating the deliberate truncation applied to each limit's scope. The report now stamps the same trailing profile segment, and the full ARN never leaves the fetch function ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ## [17.1.3] - 2026-07-24
 
