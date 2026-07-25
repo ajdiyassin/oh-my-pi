@@ -2,6 +2,7 @@
 // High-level API
 // ============================================================================
 
+import { assertNotNativeKiroRegistration } from "../../api-registry";
 import * as AIError from "../../error";
 import { getProviderDefinition, PROVIDER_REGISTRY } from "../registry";
 import type {
@@ -31,6 +32,7 @@ const customOAuthProviders = new Map<string, OAuthProviderInterface>();
  * Register a custom OAuth provider.
  */
 export function registerOAuthProvider(provider: OAuthProviderInterface): void {
+	assertNotNativeKiroRegistration(provider.id);
 	customOAuthProviders.set(provider.id, provider);
 }
 
