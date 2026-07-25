@@ -18,12 +18,12 @@ function json(value: unknown, status = 200): Response {
 
 function modelCatalog() {
 	return {
-		defaultModel: { modelId: "auto" },
+		defaultModel: "auto",
 		models: [
 			{
 				modelId: "auto",
 				modelName: "Auto",
-				supportedInputTypes: ["TEXT"],
+				supportedInputModalities: ["TEXT"],
 				tokenLimits: { maxInputTokens: 200_000, maxOutputTokens: 32_000 },
 			},
 		],
@@ -148,6 +148,7 @@ describe("isolated Kiro authentication", () => {
 				clientId: "client",
 				clientSecret: "secret",
 				tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				clientSecretExpiresAt: 4_000_000_000,
 			}),
 			json({
 				deviceCode: "device",
@@ -194,7 +195,11 @@ describe("isolated Kiro authentication", () => {
 				},
 			},
 		]);
-		expect(loggedIn).toMatchObject({ orgId: profileArn, kiroAuthMethod: "builder-id" });
+		expect(loggedIn).toMatchObject({
+			orgId: profileArn,
+			kiroAuthMethod: "builder-id",
+			kiroClientSecretExpiresAt: 4_000_000_000_000,
+		});
 	});
 
 	it("completes, rejects, cancels, and bounds desktop device polling", async () => {
@@ -262,6 +267,7 @@ describe("isolated Kiro authentication", () => {
 					kiroClientId: "client",
 					kiroClientSecret: "secret",
 					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+					kiroClientSecretExpiresAt: 4_000_000_000_000,
 					kiroAuthMethod: "builder-id" as const,
 				},
 				contentType: "application/json",
@@ -318,7 +324,35 @@ describe("isolated Kiro authentication", () => {
 				orgName: "Example",
 				kiroAuthMethod: testCase.credential.kiroAuthMethod,
 			});
+			if (testCase.credential.kiroAuthMethod === "builder-id") {
+				expect(refreshed.kiroClientSecretExpiresAt).toBe(4_000_000_000_000);
+			}
 		}
+	});
+
+	it("rejects refresh after the Builder ID registered client expires", async () => {
+		let requested = false;
+		await expect(
+			refreshKiroToken(
+				{
+					refresh: "refresh",
+					access: "old",
+					expires: 0,
+					kiroClientId: "client",
+					kiroClientSecret: "secret",
+					kiroClientSecretExpiresAt: Date.now() - 1,
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+					kiroAuthMethod: "builder-id",
+				},
+				{
+					fetch: async () => {
+						requested = true;
+						return json({ accessToken: "unexpected", expiresIn: 3600 });
+					},
+				},
+			),
+		).rejects.toMatchObject({ kind: "token-refresh" });
+		expect(requested).toBe(false);
 	});
 
 	it("exports a complete but unregistered provider leaf", () => {

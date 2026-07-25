@@ -44,7 +44,7 @@ function claudeAdaptiveModel(overrides: Record<string, unknown> = {}) {
 	return {
 		modelId: "claude-sonnet-5",
 		modelName: "claude-sonnet-5",
-		supportedInputTypes: ["TEXT", "IMAGE"],
+		supportedInputModalities: ["TEXT", "IMAGE"],
 		tokenLimits: { maxInputTokens: 1_000_000, maxOutputTokens: 64_000 },
 		promptCaching: {
 			supportsPromptCaching: true,
@@ -86,7 +86,7 @@ function gptReasoningModel(overrides: Record<string, unknown> = {}) {
 	return {
 		modelId: "gpt-5.6-sol",
 		modelName: "gpt-5.6-sol",
-		supportedInputTypes: ["TEXT", "IMAGE"],
+		supportedInputModalities: ["TEXT", "IMAGE"],
 		tokenLimits: { maxInputTokens: 272_000, maxOutputTokens: 128_000 },
 		additionalModelRequestFieldsSchema: {
 			type: "object",
@@ -115,7 +115,7 @@ function autoModel(overrides: Record<string, unknown> = {}) {
 	return {
 		modelId: "auto",
 		modelName: "auto",
-		supportedInputTypes: ["TEXT", "IMAGE"],
+		supportedInputModalities: ["TEXT", "IMAGE"],
 		tokenLimits: { maxInputTokens: 1_000_000, maxOutputTokens: 64_000 },
 		rateMultiplier: 1,
 		rateUnit: "Credit",
@@ -125,7 +125,7 @@ function autoModel(overrides: Record<string, unknown> = {}) {
 
 function sampleCatalog(models: Record<string, unknown>[] = [autoModel(), claudeAdaptiveModel(), gptReasoningModel()]) {
 	return {
-		defaultModel: { modelId: "auto" },
+		defaultModel: "auto",
 		models,
 		// Additive unknown top-level key must be tolerated by the native sanitizer.
 		futureCatalogHint: { ignored: true },
@@ -232,19 +232,19 @@ describe("Kiro sanitizer and schema-derived mapping", () => {
 				vendorExperimental: { flag: true },
 			},
 		]);
-		catalog.defaultModel = { modelId: "gpt-5.6-sol" };
+		catalog.defaultModel = "gpt-5.6-sol";
 		expect(sanitizeKiroModelCatalog(catalog).models).toHaveLength(1);
 	});
 
 	it("fails closed on empty, oversized, and malformed responses", () => {
-		expect(() => sanitizeKiroModelCatalog({ defaultModel: { modelId: "auto" }, models: [] })).toThrow("models.count");
+		expect(() => sanitizeKiroModelCatalog({ defaultModel: "auto", models: [] })).toThrow("models.count");
 		expect(() =>
 			sanitizeKiroModelCatalog({
-				defaultModel: { modelId: "m0" },
+				defaultModel: "m0",
 				models: Array.from({ length: 129 }, (_, i) => ({
 					modelId: `m${i}`,
 					modelName: `m${i}`,
-					supportedInputTypes: ["TEXT"],
+					supportedInputModalities: ["TEXT"],
 					tokenLimits: { maxInputTokens: 1, maxOutputTokens: 1 },
 				})),
 			}),
@@ -252,12 +252,12 @@ describe("Kiro sanitizer and schema-derived mapping", () => {
 		expect(() => sanitizeKiroModelCatalog(null)).toThrow("top-level.object");
 		expect(() =>
 			sanitizeKiroModelCatalog({
-				defaultModel: { modelId: "x" },
+				defaultModel: "x",
 				models: [
 					{
 						modelId: "x",
 						modelName: "x",
-						supportedInputTypes: ["TEXT"],
+						supportedInputModalities: ["TEXT"],
 						tokenLimits: { maxInputTokens: 0, maxOutputTokens: 1 },
 					},
 				],
@@ -449,7 +449,7 @@ describe("Kiro cache behavior through resolveProviderModels", () => {
 		expect(fetchCount).toBe(1);
 
 		liveCatalog = {
-			defaultModel: { modelId: "gpt-5.6-sol" },
+			defaultModel: "gpt-5.6-sol",
 			models: [gptReasoningModel(), autoModel()],
 			futureCatalogHint: { ignored: true },
 		};
