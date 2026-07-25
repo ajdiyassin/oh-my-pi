@@ -19,6 +19,7 @@ export type KnownApi =
 	| "ollama-chat"
 	| "cursor-agent"
 	| "gitlab-duo-agent"
+	| "kiro-api"
 	| "devin-agent";
 export type Api = KnownApi | (string & {});
 

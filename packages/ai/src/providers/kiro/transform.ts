@@ -14,6 +14,7 @@ import { createKiroToolUseIdNormalizer } from "./id-normalizer";
 import type {
 	KiroAssistantResponseMessage,
 	KiroHistoryEntry,
+	KiroImageBlock,
 	KiroRequest,
 	KiroToolResult,
 	KiroToolSpec,
@@ -31,11 +32,34 @@ function textContent(message: Message): string {
 	return text.toWellFormed();
 }
 
-function rejectImages(message: Message): void {
-	if (typeof message.content === "string") return;
-	if (message.content.some((part): part is ImageContent => part.type === "image")) {
-		throw new Error("Kiro image input is not enabled: the retained protocol evidence does not prove its wire shape");
+function imageFormat(mimeType: string): KiroImageBlock["format"] {
+	switch (mimeType.trim().toLowerCase()) {
+		case "image/jpeg":
+		case "image/jpg":
+			return "jpeg";
+		case "image/png":
+			return "png";
+		case "image/gif":
+			return "gif";
+		case "image/webp":
+			return "webp";
+		default:
+			throw new Error(`Kiro does not support image type: ${mimeType}`);
 	}
+}
+
+function isImageContent(part: unknown): part is ImageContent {
+	return typeof part === "object" && part !== null && "type" in part && part.type === "image" && "mimeType" in part;
+}
+
+function imageContent(message: Message): KiroImageBlock[] {
+	if (typeof message.content === "string") return [];
+	const images: KiroImageBlock[] = [];
+	for (const part of message.content) {
+		if (!isImageContent(part)) continue;
+		images.push({ format: imageFormat(part.mimeType), source: { bytes: part.data } });
+	}
+	return images;
 }
 
 function parseToolArguments(call: ToolCall): Record<string, unknown> {
@@ -66,8 +90,14 @@ function assistantMessage(
 	return { content: content.toWellFormed(), ...(toolUses.length > 0 ? { toolUses } : {}) };
 }
 
+function assertNoToolResultImages(message: ToolResultMessage): void {
+	if (message.content.some(part => part.type === "image")) {
+		throw new Error("Kiro tool-result image input is not enabled: only user-message image wire shape is verified");
+	}
+}
+
 function toolResult(message: ToolResultMessage, normalizeId: (id: string) => string): KiroToolResult {
-	rejectImages(message);
+	assertNoToolResultImages(message);
 	return {
 		content: [{ text: textContent(message) }],
 		status: message.isError ? "error" : "success",
@@ -144,7 +174,6 @@ export function transformKiroRequest(
 ): KiroRequest {
 	const normalizer = createKiroToolUseIdNormalizer();
 	const messages = retainPairedMessages(context.messages);
-	for (const message of messages) rejectImages(message);
 
 	let currentStart = messages.length - 1;
 	while (currentStart > 0 && messages[currentStart]?.role === "toolResult") currentStart--;
@@ -165,9 +194,17 @@ export function transformKiroRequest(
 				content = `${systemPending}\n\n${content}`;
 				systemPending = "";
 			}
+			const images = imageContent(message);
 			const previous = history.at(-1)?.userInputMessage;
-			if (previous) previous.content += `\n\n${content}`;
-			else history.push({ userInputMessage: userMessage(content, model.requestModelId ?? model.id) });
+			if (previous && images.length === 0 && !previous.images?.length) previous.content += `\n\n${content}`;
+			else {
+				history.push({
+					userInputMessage: {
+						...userMessage(content, model.requestModelId ?? model.id),
+						...(images.length > 0 ? { images } : {}),
+					},
+				});
+			}
 			continue;
 		}
 		if (message.role === "assistant") {
@@ -189,6 +226,7 @@ export function transformKiroRequest(
 	}
 
 	let currentContent = "";
+	let currentImages: KiroImageBlock[] = [];
 	const currentResults: KiroToolResult[] = [];
 	const first = currentMessages[0];
 	if (first?.role === "assistant") {
@@ -205,6 +243,7 @@ export function transformKiroRequest(
 		currentContent = "Tool results provided.";
 	} else if (first) {
 		currentContent = textContent(first);
+		currentImages = imageContent(first);
 	}
 	if (systemPending) currentContent = `${systemPending}${currentContent ? `\n\n${currentContent}` : ""}`;
 
@@ -217,6 +256,7 @@ export function transformKiroRequest(
 		? undefined
 		: buildKiroModelRequestFields(model, options.reasoning, options.hideThinkingSummary);
 	return {
+		agentMode: "vibe",
 		conversationState: {
 			chatTriggerType: "MANUAL",
 			agentTaskType: "vibe",
@@ -224,6 +264,7 @@ export function transformKiroRequest(
 			currentMessage: {
 				userInputMessage: {
 					...userMessage(currentContent, model.requestModelId ?? model.id),
+					...(currentImages.length > 0 ? { images: currentImages } : {}),
 					...(Object.keys(currentContext).length > 0 ? { userInputMessageContext: currentContext } : {}),
 				},
 			},

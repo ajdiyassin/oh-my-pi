@@ -27,6 +27,7 @@ const BUILTIN_API_IDS = [
 	"google-generative-ai",
 	"google-gemini-cli",
 	"google-vertex",
+	"kiro-api",
 	"ollama-chat",
 	"cursor-agent",
 	"gitlab-duo-agent",
@@ -61,6 +62,11 @@ export interface RegisteredCustomApi {
 const customApiRegistry = new Map<string, RegisteredCustomApi>();
 
 function assertCustomApiName(api: string): void {
+	if (api === "kiro" || api === "kiro-api") {
+		throw new AIError.ConfigurationError(
+			"Kiro is built into this OMP version. Remove/disable the omp-provider-kiro extension and restart OMP; your OMP-managed Kiro login can then be configured with /login kiro.",
+		);
+	}
 	if (BUILTIN_APIS.has(api as KnownApi)) {
 		throw new AIError.ConfigurationError(`Cannot register custom API "${api}": built-in API names are reserved.`);
 	}

@@ -23,6 +23,7 @@ import { getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/mode
 import {
 	googleAntigravityModelManagerOptions,
 	googleGeminiCliModelManagerOptions,
+	kiroModelManagerOptions,
 	type OpenAICodexAccount,
 	openaiCodexModelManagerOptions,
 	PROVIDER_DESCRIPTORS,
@@ -37,6 +38,7 @@ import {
 const SPECIAL_MODEL_MANAGER_PROVIDER_IDS: readonly string[] = [
 	"google-antigravity",
 	"google-gemini-cli",
+	"kiro",
 	"openai-codex",
 ];
 
@@ -1880,6 +1882,29 @@ export class ModelRegistry {
 						fetch: this.#fetch,
 					}),
 			},
+			{
+				providerId: "kiro",
+				authoritative: true,
+				resolveKey: value => value,
+				createOptions: () =>
+					kiroModelManagerOptions({
+						resolveCredential: async () => {
+							const credential = await this.authStorage.resolveCredential("kiro");
+							if (!credential) return undefined;
+							if (credential.type === "oauth") {
+								return credential.orgId
+									? { type: "oauth", token: credential.token, profileArn: credential.orgId }
+									: undefined;
+							}
+							return {
+								type: "api_key",
+								token: credential.token,
+								...(credential.apiEndpoint ? { apiEndpoint: credential.apiEndpoint } : {}),
+							};
+						},
+						fetch: this.#fetch,
+					}),
+			},
 		];
 		const disabledProviders = getDisabledProviderIdsFromSettings();
 		const standardProviderDescriptors = PROVIDER_DESCRIPTORS.filter(descriptor => {
@@ -1937,9 +1962,11 @@ export class ModelRegistry {
 		for (let i = 0; i < enabledSpecialProviderDescriptors.length; i++) {
 			const descriptor = enabledSpecialProviderDescriptors[i];
 			const key = descriptor.resolveKey(specialKeys[i]);
-			if (!isAuthenticated(key)) {
+			if (descriptor.providerId === "kiro") {
+				options.push(descriptor.createOptions(key ?? ""));
 				continue;
 			}
+			if (!isAuthenticated(key)) continue;
 			options.push(descriptor.createOptions(key));
 		}
 		// Append runtime model managers registered by extensions via fetchDynamicModels.

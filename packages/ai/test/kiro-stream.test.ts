@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { streamKiro, transformKiroRequest } from "@oh-my-pi/pi-ai/providers/kiro/index";
+import { stream } from "@oh-my-pi/pi-ai/stream";
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
@@ -202,18 +203,42 @@ describe("Kiro request transforms", () => {
 		});
 	});
 
-	it("fails closed when image input has no capture-verified wire shape", () => {
+	it("serializes capture-verified user images and rejects unverified tool-result images", () => {
+		const request = transformKiroRequest(model, {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "describe" },
+						{ type: "image", data: "aGVsbG8=", mimeType: "image/jpeg" },
+					],
+					timestamp: Date.now(),
+				},
+			],
+		});
+		expect(request).toMatchObject({
+			agentMode: "vibe",
+			conversationState: {
+				currentMessage: {
+					userInputMessage: {
+						content: "describe",
+						images: [{ format: "jpeg", source: { bytes: "aGVsbG8=" } }],
+					},
+				},
+			},
+		});
+
 		expect(() =>
 			transformKiroRequest(model, {
 				messages: [
+					assistantWithTool("call-image"),
 					{
-						role: "user",
-						content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
-						timestamp: Date.now(),
+						...toolResult("call-image"),
+						content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/jpeg" }],
 					},
 				],
 			}),
-		).toThrow("protocol evidence does not prove its wire shape");
+		).toThrow("only user-message image wire shape is verified");
 	});
 });
 
@@ -247,7 +272,7 @@ describe("Kiro native stream", () => {
 		expect(fetchCalls).toHaveLength(1);
 		expect(fetchCalls[0].url).toBe("https://runtime.us-east-1.kiro.dev/");
 		expect(new Headers(fetchCalls[0].init?.headers).get("x-amz-target")).toBe(
-			"AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+			"KiroRuntimeService.GenerateAssistantResponse",
 		);
 		expect(new Headers(fetchCalls[0].init?.headers).get("authorization")).toBe("Bearer oauth-access");
 		expect(payload).toMatchObject({
@@ -584,6 +609,33 @@ describe("Kiro native stream", () => {
 		expect(transportSignal?.reason).toHaveProperty("name", "TimeoutError");
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("timed out");
+	});
+
+	it("dispatches through the native API and leaves timeout enforcement to the Kiro leaf", async () => {
+		vi.useFakeTimers();
+		const fetchStarted = Promise.withResolvers<void>();
+		let transportSignal: AbortSignal | null | undefined;
+		const resultPromise = stream(
+			model,
+			{ messages: [user("native dispatch")] },
+			{
+				apiKey: "ksk_test",
+				streamFirstEventTimeoutMs: 5,
+				fetch: async (_input, init) => {
+					transportSignal = init?.signal;
+					fetchStarted.resolve();
+					const { promise, reject } = Promise.withResolvers<Response>();
+					transportSignal?.addEventListener("abort", () => reject(transportSignal?.reason), { once: true });
+					return promise;
+				},
+			},
+		).result();
+		await fetchStarted.promise;
+		vi.advanceTimersByTime(5);
+		const result = await resultPromise;
+		expect(transportSignal?.reason).toHaveProperty("name", "TimeoutError");
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).not.toContain("lazy provider stream");
 	});
 
 	it("honors caller cancellation while fetch is pending", async () => {

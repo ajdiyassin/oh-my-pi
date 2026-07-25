@@ -144,9 +144,11 @@ describe("Kiro Phase 0 protocol fixtures", () => {
 			origin: "KIRO_CLI",
 			profileArn: "<profile-arn>",
 		});
-		expect(runtimeProtocol.contracts.runtimeRequests.target).toBe(
-			"AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		);
+		expect(runtimeProtocol.contracts.runtimeRequests.target).toBe("KiroRuntimeService.GenerateAssistantResponse");
+		expect(runtimeProtocol.contracts.runtimeRequests.apiKey.body.agentMode).toBe("vibe");
+		expect(
+			runtimeProtocol.contracts.runtimeRequests.apiKey.body.conversationState.currentMessage.userInputMessage.images,
+		).toEqual([{ format: "jpeg", source: { bytes: "<base64-image-bytes>" } }]);
 	});
 
 	test("retained error evidence separates captured HTTP JSON from synthetic EventStream exceptions", () => {
