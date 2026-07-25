@@ -18,6 +18,7 @@ The source archive names are recorded for provenance only; their contents are se
 - `09-image`
 - `10-device-flow`
 - `10-device-flow-google`
+- `22-image-desktop`
 
 Only sanitized metadata, schemas, and independently constructed CRC-valid EventStream frames may be committed. Never copy or quote raw captures, prompts, responses, tool arguments/results, cookies, authorization codes, PKCE verifiers, refresh/access/API keys, email/account/profile identifiers, or machine paths. Use semantic markers such as `<access-token>`, `<profile-arn>`, `<request-id>`, and `<provider-message>`.
 
@@ -26,7 +27,7 @@ Only sanitized metadata, schemas, and independently constructed CRC-valid EventS
 - Region-scoped management base: `https://management.<region>.kiro.dev/`.
 - Region-scoped runtime base: `https://runtime.<region>.kiro.dev/`.
 - Management targets observed/required by the Phase 0 contract: `AmazonCodeWhispererService.ListAvailableProfiles`, `AmazonCodeWhispererService.ListAvailableModels`, `AmazonCodeWhispererService.GetProfile`, and `AmazonCodeWhispererService.GetUsageLimits`.
-- Runtime target: `AmazonCodeWhispererStreamingService.GenerateAssistantResponse`.
+- Runtime target: `KiroRuntimeService.GenerateAssistantResponse` (confirmed for both text-only and image requests in `22-image-desktop`).
 - Runtime request/response transport uses `Content-Type: application/x-amz-json-1.0` and `Accept: application/vnd.amazon.eventstream`. Authenticated requests use a bearer `Authorization` value. The observed/allowed request metadata includes `x-amzn-codewhisperer-optout`, `amz-sdk-invocation-id`, `amz-sdk-request`, and `User-Agent`; do not assume every optional header appears on every flow or add fingerprinting headers.
 - Management and runtime requests are separate concerns: API-key discovery validates a bounded management route before inference, while OAuth runtime calls use the selected profile. The API-key runtime request has no `profileArn`; OAuth carries the selected profile in the validated protocol/request shape.
 
@@ -51,7 +52,7 @@ EventStream frames are binary Amazon EventStream messages. Decode `:message-type
 
 - Tool input represented as strings is a delta fragment and must be concatenated per tool-use ID. Tool input represented as an object is a complete snapshot; retain the newest snapshot and never append repeated serialized snapshots. Interleaved IDs remain independent. A completed empty zero-argument tool normalizes to `{}`; malformed completed input is a typed error, not raw diagnostic output.
 - `08-exception` is an HTTP 400 JSON error fixture. It must be classified from status/code/message/request-id metadata and must not be mistaken for an EventStream exception. The EventStream exception fixture is synthetic and exists to exercise frame-level exception handling separately.
-- `09-image` proves image capture remains deferred: the sanitized observation contains tool activity but no usable image evidence. Do not claim image support from this archive or add image fields based on it.
+- `09-image` remained inconclusive. The later successful `22-image-desktop` capture proves current user-message images use `userInputMessage.images[]` with `{ format, source: { bytes: <base64> } }`; JPEG was observed. Tool-result image blocks and continuation-id creation remain unproven and fail closed.
 - Metrics/event fields are additive and may arrive in separate events. Preserve provider-reported input/output/cache/reasoning values; reasoning is a subset of output, and cache values are never estimated. Context usage is metadata/fallback, not a new untyped usage field.
 
 Any future protocol change must first add a sanitized fixture and fail closed on unknown or malformed recognized fields. The fixtures and this guide must remain free of secrets, identity values, raw content, and paths.

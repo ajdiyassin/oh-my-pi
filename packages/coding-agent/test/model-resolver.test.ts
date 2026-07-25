@@ -950,6 +950,27 @@ describe("resolveAgentModelPatterns", () => {
 	});
 });
 
+describe("Kiro legacy selector compatibility", () => {
+	const liveKiroModel = buildModel({
+		id: "claude-opus-4.8",
+		name: "Claude Opus 4.8",
+		api: "kiro-api",
+		provider: "kiro",
+		baseUrl: "https://runtime.us-east-1.kiro.dev/",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+	});
+
+	test("resolves only explicit historical dashed IDs to exact live dotted IDs", () => {
+		expect(resolveModelFromString("kiro/claude-opus-4-8", [liveKiroModel])).toBe(liveKiroModel);
+		expect(resolveModelFromString("kiro/claude-opus-4.8", [liveKiroModel])).toBe(liveKiroModel);
+		expect(resolveModelFromString("kiro/claude-opus-4-9", [liveKiroModel])).toBeUndefined();
+	});
+});
+
 describe("resolveModelFromString", () => {
 	test("falls back to pattern parsing for provider/model:thinking when strict provider+id miss", () => {
 		const resolved = resolveModelFromString("openrouter/qwen/qwen3-coder:exacto:high", allModels);

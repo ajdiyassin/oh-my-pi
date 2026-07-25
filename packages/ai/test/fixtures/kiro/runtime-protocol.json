@@ -46,7 +46,7 @@
       }
     },
     "runtimeRequests": {
-      "target": "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+      "target": "KiroRuntimeService.GenerateAssistantResponse",
       "apiKey": {
         "headers": {
           "authorization": "Bearer <api-key>",
@@ -54,6 +54,7 @@
           "content-type": "application/x-amz-json-1.0"
         },
         "body": {
+          "agentMode": "vibe",
           "conversationState": {
             "chatTriggerType": "MANUAL",
             "agentTaskType": "vibe",
@@ -63,6 +64,7 @@
                 "content": "<user-content>",
                 "modelId": "<exact-live-model-id>",
                 "origin": "KIRO_CLI",
+                "images": [{ "format": "jpeg", "source": { "bytes": "<base64-image-bytes>" } }],
                 "userInputMessageContext": "<sanitized-context>"
               }
             }

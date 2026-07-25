@@ -395,19 +395,18 @@ describe("isolated Kiro authentication", () => {
 		expect(requested).toBe(false);
 	});
 
-	it("exports a complete but unregistered provider leaf", () => {
+	it("registers the native provider and preserves selected OAuth profile encoding", () => {
 		expect(kiroProvider).toMatchObject({
 			id: "kiro",
 			envKeys: "KIRO_API_KEY",
 			credentialPolicy: "replace",
-			showInLoginList: false,
 		});
+		expect(getProviderDefinition("kiro")).toBe(kiroProvider);
 		expect(kiroProvider.getApiKey?.({ refresh: "r", access: "a", expires: 1, orgId: profileArn })).toBe(
 			JSON.stringify({ token: "a", profileArn }),
 		);
 		expect(() => kiroProvider.getApiKey?.({ refresh: "r", access: "a", expires: 1 })).toThrow(
 			"missing the selected profile",
 		);
-		expect(getProviderDefinition("kiro")).toBeUndefined();
 	});
 });

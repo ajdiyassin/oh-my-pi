@@ -33,6 +33,7 @@ import { getVertexAccessToken } from "./providers/google-auth";
 import type { GoogleGeminiCliOptions } from "./providers/google-gemini-cli";
 import type { GoogleVertexOptions } from "./providers/google-vertex";
 import { isKimiModel, streamKimi } from "./providers/kimi";
+import type { KiroOptions } from "./providers/kiro/types";
 import type { OllamaChatOptions } from "./providers/ollama";
 import type { OpenAICompletionsOptions } from "./providers/openai-completions";
 import { streamPiNative } from "./providers/pi-native-client";
@@ -53,6 +54,7 @@ import {
 	streamGoogle,
 	streamGoogleGeminiCli,
 	streamGoogleVertex,
+	streamKiro,
 	streamOllama,
 	streamOpenAICodexResponses,
 	streamOpenAICompletions,
@@ -888,6 +890,9 @@ function streamDispatch<TApi extends Api>(
 				context,
 				providerOptions as GoogleGeminiCliOptions,
 			);
+
+		case "kiro-api":
+			return streamKiro(model as Model<"kiro-api">, context, providerOptions as KiroOptions);
 
 		case "ollama-chat":
 			return streamOllama(model as Model<"ollama-chat">, context, providerOptions as OllamaChatOptions);
@@ -1834,6 +1839,14 @@ function mapOptionsForApi<TApi extends Api>(
 				cachedContent: options?.cachedContent,
 			});
 		}
+
+		case "kiro-api":
+			return castApi<"kiro-api">({
+				...base,
+				reasoning: options?.reasoning,
+				disableReasoning: options?.disableReasoning,
+				hideThinkingSummary: options?.hideThinkingSummary,
+			});
 
 		case "ollama-chat":
 			return castApi<"ollama-chat">({

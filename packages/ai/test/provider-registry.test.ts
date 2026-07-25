@@ -18,6 +18,7 @@ const ENV_KEYS = [
 	"ZENMUX_API_KEY",
 	"EXA_API_KEY",
 	"XAI_OAUTH_TOKEN",
+	"KIRO_API_KEY",
 	"UMANS_AI_CODING_PLAN_API_KEY",
 	"LLAMA_CPP_API_KEY",
 	"WANDB_API_KEY",
@@ -45,6 +46,8 @@ describe("provider registry auth surface", () => {
 		expect(getEnvApiKey("zenmux")).toBe("zenmux-env");
 		Bun.env.UMANS_AI_CODING_PLAN_API_KEY = "umans-env";
 		expect(getEnvApiKey("umans")).toBe("umans-env");
+		Bun.env.KIRO_API_KEY = "kiro-env";
+		expect(getEnvApiKey("kiro")).toBe("kiro-env");
 		Bun.env.LLAMA_CPP_API_KEY = "llama-env";
 		expect(getEnvApiKey("llama.cpp")).toBe("llama-env");
 		// Exa is derived from the provider registry's `envKeys` definition.

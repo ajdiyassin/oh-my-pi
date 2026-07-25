@@ -27,6 +27,7 @@ import { huggingfaceProvider } from "./huggingface";
 import { kagiProvider } from "./kagi";
 import { kiloProvider } from "./kilo";
 import { kimiCodeProvider } from "./kimi-code";
+import { kiroProvider } from "./kiro";
 import { litellmProvider } from "./litellm";
 import { llamaCppProvider } from "./llama-cpp";
 import { lmStudioProvider } from "./lm-studio";
@@ -105,6 +106,7 @@ const ALL = [
 	umansProvider,
 	qwenPortalProvider,
 	sakanaProvider,
+	kiroProvider,
 	minimaxCodeProvider,
 	minimaxCodeCnProvider,
 	xiaomiProvider,
