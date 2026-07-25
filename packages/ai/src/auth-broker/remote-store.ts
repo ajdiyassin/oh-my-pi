@@ -918,9 +918,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			apiEndpoint: refreshed.apiEndpoint,
 			orgId: refreshed.orgId,
 			orgName: refreshed.orgName,
-			kiroClientId: refreshed.kiroClientId,
-			kiroTokenEndpoint: refreshed.kiroTokenEndpoint,
-			kiroAuthMethod: refreshed.kiroAuthMethod,
 		};
 	}
 

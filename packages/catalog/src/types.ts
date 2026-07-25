@@ -825,12 +825,6 @@ export interface Model<TApi extends Api = Api> {
 	supportsTools?: boolean;
 	/** Whether this model accepts the GA OpenAI Responses `{ type: "computer" }` native tool. */
 	supportsComputerUse?: boolean;
-	/** Kiro discovery-only prompt-cache capabilities; runtime activation is intentionally deferred. */
-	kiroPromptCaching?: {
-		supportsPromptCaching: boolean;
-		maximumCacheCheckpointsPerRequest?: number;
-		minimumTokensPerCacheCheckpoint?: number;
-	};
 	/** GitLab Duo Workflow root namespace selected during catalog discovery. */
 	gitlabDuoWorkflowRootNamespaceId?: string;
 	/** Cursor `max_mode` request flag returned by `GetUsableModels` for premium models that require max mode. */
