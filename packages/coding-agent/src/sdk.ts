@@ -731,10 +731,7 @@ export async function loadCliExtensionProviders(
 	for (const sourceId of new Set(activeSources)) {
 		modelRegistry.clearSourceRegistrations(sourceId);
 	}
-	for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-		modelRegistry.registerProvider(name, config, sourceId);
-	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
+	modelRegistry.drainPendingProviderRegistrations(extensionsResult.runtime.pendingProviderRegistrations);
 	await modelRegistry.refreshRuntimeProviders();
 }
 
@@ -2010,12 +2007,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				modelRegistry.clearSourceRegistrations(sourceId);
 			}
 		}
-		if (extensionsResult.runtime.pendingProviderRegistrations.length > 0) {
-			for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-				modelRegistry.registerProvider(name, config, sourceId);
-			}
-			extensionsResult.runtime.pendingProviderRegistrations = [];
-		}
+		modelRegistry.drainPendingProviderRegistrations(extensionsResult.runtime.pendingProviderRegistrations);
 		// Hydrate cached runtime (extension) provider catalogs before model
 		// resolution. Dynamic-only providers have no synchronous registration side
 		// effect, so a cold --model/provider resume must see the same fresh SQLite
