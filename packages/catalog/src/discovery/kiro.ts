@@ -89,7 +89,13 @@ export interface SanitizedKiroModelCatalog {
 export interface KiroManagementRequestOptions {
 	apiRegion: string;
 	token: string;
-	target: "ListAvailableProfiles" | "ListAvailableModels";
+	target: "ListAvailableProfiles" | "ListAvailableModels" | "GetUsageLimits";
+	/**
+	 * `X-Amz-Target` service prefix. Discovery targets live on the legacy
+	 * `AmazonCodeWhispererService`; `GetUsageLimits` is served by
+	 * `KiroControlPlaneBearerService` in current captures.
+	 */
+	service?: "AmazonCodeWhispererService" | "KiroControlPlaneBearerService";
 	body: unknown;
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
@@ -504,7 +510,7 @@ export async function kiroManagementRequest(options: KiroManagementRequestOption
 	const timeoutMs = options.timeoutMs ?? MANAGEMENT_TIMEOUT_MS;
 	const maxBytes =
 		options.maxBytes ??
-		(options.target === "ListAvailableProfiles" ? MAX_PROFILES_RESPONSE_BYTES : MAX_MODELS_RESPONSE_BYTES);
+		(options.target === "ListAvailableModels" ? MAX_MODELS_RESPONSE_BYTES : MAX_PROFILES_RESPONSE_BYTES);
 
 	const timeout = new AbortController();
 	const timer = setTimeout(
@@ -519,7 +525,7 @@ export async function kiroManagementRequest(options: KiroManagementRequestOption
 			headers: {
 				"Content-Type": "application/x-amz-json-1.0",
 				Authorization: `Bearer ${options.token}`,
-				"X-Amz-Target": `AmazonCodeWhispererService.${options.target}`,
+				"X-Amz-Target": `${options.service ?? "AmazonCodeWhispererService"}.${options.target}`,
 			},
 			body: JSON.stringify(options.body),
 			signal,

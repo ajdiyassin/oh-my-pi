@@ -62,10 +62,12 @@
 ### Added
 
 - Added unreachable Kiro Phase 1 route validation, bounded model discovery, schema-derived model mapping, exact historical aliases, and authoritative 24-hour model-cache options ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Registered `kiro` in the provider catalog with dynamic-discovery-authoritative models (`defaultModel: "auto"`, no static rows), so the native provider resolves entirely from live `ListAvailableModels` responses ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ### Changed
 
 - Hardened Kiro discovery sanitization against prototype-polluting schema property names and required entries, and routed bounded management response reads through the shared reader ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- `kiroManagementRequest` accepts an explicit `X-Amz-Target` service prefix so profile-scoped `GetUsageLimits` can use the current `KiroControlPlaneBearerService` target while discovery keeps the legacy `AmazonCodeWhispererService` one ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 ## [17.1.3] - 2026-07-24
 
 ### Fixed
