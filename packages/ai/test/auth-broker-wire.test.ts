@@ -192,7 +192,7 @@ describe("auth-broker wire surface", () => {
 					kiroClientId: "registered-client-id",
 					kiroClientSecret: "registered-client-secret",
 					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-					kiroAuthMethod: "builder-id",
+					kiroAuthMethod: "device",
 					orgId: "arn:aws:codewhisperer:us-east-1:111122223333:profile/example",
 					orgName: "Example profile",
 				},
@@ -211,7 +211,7 @@ describe("auth-broker wire surface", () => {
 			refresh: REMOTE_REFRESH_SENTINEL,
 			kiroClientId: "registered-client-id",
 			kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-			kiroAuthMethod: "builder-id",
+			kiroAuthMethod: "device",
 			orgId: "arn:aws:codewhisperer:us-east-1:111122223333:profile/example",
 			orgName: "Example profile",
 		});

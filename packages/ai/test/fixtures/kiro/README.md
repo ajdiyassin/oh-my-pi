@@ -46,8 +46,9 @@ EventStream frames are binary Amazon EventStream messages. Decode `:message-type
 
 ## Authentication and state
 
-- Browser OAuth evidence records the PKCE/state/loopback callback contract needed for the OMP-owned browser implementation. The committed fixture is a privacy-safe protocol contract, not proof that OMP has already executed this not-yet-implemented flow. Callback/state mismatch, cancellation, and expiry must fail without persisting credentials.
-- Builder/IDC and social device behavior are distinct. `10-device-flow` and the validated AWS OIDC contract establish a non-loopback device path with registered-client state; `10-device-flow-google` records the distinct social device surface. A validated device flow satisfies the Phase 0 non-loopback requirement; no separate manual authorization-code flow was proven. Do not infer support for an unobserved flow.
+ - Browser OAuth evidence records the PKCE/state/loopback callback contract needed for the OMP-owned browser implementation. The committed fixture is a privacy-safe protocol contract, not proof that OMP has already executed this not-yet-implemented flow. Callback/state mismatch, cancellation, and expiry must fail without persisting credentials.
+ - Builder/IDC and social device behavior are distinct. `10-device-flow` and the validated AWS OIDC contract establish a non-loopback device path with registered-client state. A validated device flow satisfies the Phase 0 non-loopback requirement; no separate manual authorization-code flow was proven.
+ - Desktop Google/GitHub OAuth is recorded as observed evidence, but it is not a supported OMP login product path and OMP does not implement or offer this flow. Do not infer support for an unobserved flow.
 - Successful OAuth profile selection is part of login. Preserve the selected `<profile-arn>` exactly across refresh; refresh state (including any registered-client state proven necessary by the protocol) is broker-owned, redacted, and merged without silently switching profile/account. Re-running login is the profile-switch operation.
 - The supported native boundary is OMP-managed browser/manual/device authentication and pasted/environment API keys. Existing Kiro CLI/IDE sessions, databases, sidecars, and caches are deliberately out of scope.
 
