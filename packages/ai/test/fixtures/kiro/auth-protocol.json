@@ -29,10 +29,37 @@
       "provider": "kiro-desktop",
       "steps": [
         {
+          "name": "register_client",
+          "request": {
+            "method": "POST",
+            "endpoint": "<oidc-host>/client/register",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "jsonFields": {
+              "clientName": "<client-name>",
+              "clientType": "public",
+              "scopes": ["<requested-scopes>"],
+              "grantTypes": ["authorization_code", "refresh_token"],
+              "issuerUrl": "<issuer-url>",
+              "redirectUris": ["<loopback-callback-uri>"]
+            }
+          },
+          "response": {
+            "status": 200,
+            "fields": {
+              "clientId": "<client-id>",
+              "clientSecret": "<client-secret>",
+              "authorizationEndpoint": "<authorization-endpoint>",
+              "tokenEndpoint": "<token-endpoint>"
+            }
+          }
+        },
+        {
           "name": "authorization_request",
           "request": {
             "method": "GET",
-            "endpoint": "https://auth.{region}.kiro.dev/authorize",
+            "endpoint": "<authorization-endpoint>",
             "query": {
               "response_type": "code",
               "client_id": "<client-id>",
@@ -42,12 +69,7 @@
               "code_challenge": "<s256-code-challenge>",
               "code_challenge_method": "S256"
             }
-          },
-          "semantics": [
-            "The client creates a loopback callback listener before opening the browser.",
-            "The state value is returned unchanged by the callback and must be checked before exchanging the code.",
-            "The verifier is retained locally and is never sent to the authorization page."
-          ]
+          }
         },
         {
           "name": "loopback_callback",
@@ -71,16 +93,17 @@
           "name": "token_exchange",
           "request": {
             "method": "POST",
-            "endpoint": "https://auth.{region}.kiro.dev/oauth/token",
+            "endpoint": "<token-endpoint>",
             "headers": {
-              "content-type": "application/x-www-form-urlencoded"
+              "content-type": "application/json"
             },
-            "formFields": {
-              "grant_type": "authorization_code",
+            "jsonFields": {
+              "clientId": "<client-id>",
+              "clientSecret": "<client-secret>",
               "code": "<authorization-code>",
-              "redirect_uri": "<loopback-callback-uri>",
-              "client_id": "<client-id>",
-              "code_verifier": "<pkce-verifier>"
+              "codeVerifier": "<pkce-verifier>",
+              "grantType": "authorization_code",
+              "redirectUri": "<loopback-callback-uri>"
             }
           },
           "response": {

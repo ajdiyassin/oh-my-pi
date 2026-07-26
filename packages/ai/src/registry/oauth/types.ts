@@ -15,7 +15,7 @@ export type OAuthCredentials = {
 	/** Unix epoch milliseconds; `0` means the registered client does not expire. */
 	kiroClientSecretExpiresAt?: number;
 	kiroTokenEndpoint?: string;
-	kiroAuthMethod?: "builder-id" | "google" | "github" | "browser";
+	kiroAuthMethod?: "device" | "browser";
 	/**
 	 * Organization/workspace the token is scoped to (e.g. an Anthropic org
 	 * UUID or a ChatGPT workspace id). Captured once at login; token refreshes

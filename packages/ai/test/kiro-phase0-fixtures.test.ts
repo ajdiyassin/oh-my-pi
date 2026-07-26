@@ -151,6 +151,25 @@ describe("Kiro Phase 0 protocol fixtures", () => {
 		).toEqual([{ format: "jpeg", source: { bytes: "<base64-image-bytes>" } }]);
 	});
 
+	test("browser registration and device flow contracts are distinct and require loopback redirects", () => {
+		const browserAuth = authProtocol.cases.find(c => c.name === "browser_pkce_loopback_callback_and_token_exchange");
+		const deviceAuth = authProtocol.cases.find(
+			c => c.name === "builder_id_oidc_registration_device_authorization_and_polling",
+		);
+		const browserRegistration = browserAuth?.steps?.[0];
+		expect(browserRegistration).toMatchObject({
+			name: "register_client",
+			request: { jsonFields: { redirectUris: ["<loopback-callback-uri>"] } },
+		});
+		const deviceRegistrationStep = deviceAuth?.steps?.[0];
+		expect(deviceRegistrationStep).toMatchObject({
+			name: "register_client",
+			request: { jsonFields: { clientName: "<synthetic-client-name>" } },
+		});
+		const deviceRegistration = deviceRegistrationStep?.request?.jsonFields;
+		expect(deviceRegistration).not.toHaveProperty("redirectUris");
+	});
+
 	test("retained error evidence separates captured HTTP JSON from synthetic EventStream exceptions", () => {
 		expect(runtimeProtocol.contracts.httpErrors.requestBodyInvalid.status).toBe(400);
 		expect(runtimeProtocol.contracts.httpErrors.requestBodyInvalid.body.__type).toBe("REQUEST_BODY_INVALID");

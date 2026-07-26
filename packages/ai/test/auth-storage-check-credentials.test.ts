@@ -384,7 +384,7 @@ describe("AuthStorage.checkCredentials", () => {
 				kiroClientId: "client",
 				kiroClientSecret: "secret",
 				kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-				kiroAuthMethod: "builder-id",
+				kiroAuthMethod: "device",
 			},
 			disabledCause: null,
 		};
@@ -394,7 +394,7 @@ describe("AuthStorage.checkCredentials", () => {
 					kiroClientId: "client",
 					kiroClientSecret: "secret",
 					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-					kiroAuthMethod: "builder-id",
+					kiroAuthMethod: "device",
 				});
 				return { access: "kiro-new", refresh: "kiro-rotated", expires: Date.now() + 3_600_000 };
 			},
@@ -415,7 +415,7 @@ describe("AuthStorage.checkCredentials", () => {
 				kiroClientId: "client",
 				kiroClientSecret: "secret",
 				kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-				kiroAuthMethod: "builder-id",
+				kiroAuthMethod: "device",
 			});
 		} finally {
 			storage.close();

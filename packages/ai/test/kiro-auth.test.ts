@@ -58,7 +58,8 @@ describe("isolated Kiro authentication", () => {
 					refresh: "refresh",
 					expires: 0,
 					kiroClientId: "client",
-					kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
+					kiroClientSecret: "secret",
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
 					kiroAuthMethod: "browser",
 				},
 				{ fetch: async () => new Response(oversized) },
@@ -71,7 +72,8 @@ describe("isolated Kiro authentication", () => {
 					refresh: "refresh",
 					expires: 0,
 					kiroClientId: "client",
-					kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
+					kiroClientSecret: "secret",
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
 					kiroAuthMethod: "browser",
 				},
 				{
@@ -86,7 +88,8 @@ describe("isolated Kiro authentication", () => {
 					refresh: "refresh",
 					expires: 0,
 					kiroClientId: "client",
-					kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
+					kiroClientSecret: "secret",
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
 					kiroAuthMethod: "browser",
 				},
 				{ fetch: async () => new Response("") },
@@ -138,25 +141,41 @@ describe("isolated Kiro authentication", () => {
 		).rejects.toBeInstanceOf(AIError.OAuthError);
 	});
 
-	it("completes browser PKCE manually, selects a profile, and rejects HTTP failure or cancellation", async () => {
-		const requests: Array<{ url: string; body: string }> = [];
+	it("registers the actual loopback redirect before browser PKCE token exchange", async () => {
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		let callbackUri = "";
 		const callbacks = {
-			onAuth: () => {},
+			onAuth: ({ url }: { url: string }) => {
+				const authorization = new URL(url);
+				callbackUri = authorization.searchParams.get("redirect_uri") ?? "";
+				const callback = new URL(callbackUri);
+				callback.searchParams.set("code", "code");
+				callback.searchParams.set("state", authorization.searchParams.get("state") ?? "");
+				void fetch(callback);
+			},
 			onPrompt: async () => "",
-			onManualCodeInput: async () => "code",
 			fetch: async (input: string | URL | Request, init?: RequestInit) => {
-				requests.push({ url: String(input), body: String(init?.body ?? "") });
-				return String(input).includes("management")
-					? json({ profiles: [{ arn: profileArn, profileName: "Example" }] })
-					: json({ accessToken: "access", refreshToken: "refresh", expiresIn: 3600 });
+				const url = String(input);
+				requests.push({ url, body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {} });
+				if (url.endsWith("/client/register")) {
+					return json({
+						clientId: "client",
+						clientSecret: "secret",
+						clientSecretExpiresAt: 4_000_000_000,
+						authorizationEndpoint: "https://oidc.us-east-1.amazonaws.com/authorize",
+						tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+					});
+				}
+				if (url.endsWith("/token"))
+					return json({ accessToken: "access", refreshToken: "refresh", expiresIn: 3600 });
+				return json({ profiles: [{ arn: profileArn, profileName: "Example" }] });
 			},
 		};
 		const config = {
+			issuerUrl: "https://view.awsapps.com/start",
 			region: "us-east-1",
-			clientId: "client",
 			preferredPort: 0,
 			scopes: ["scope"],
-			manualInputOnly: true,
 		};
 		const loggedIn = await loginKiroBrowser(callbacks, config);
 		expect(loggedIn).toMatchObject({
@@ -164,16 +183,31 @@ describe("isolated Kiro authentication", () => {
 			orgId: profileArn,
 			orgName: "Example",
 			kiroClientId: "client",
+			kiroClientSecret: "secret",
 			kiroAuthMethod: "browser",
-			kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
+			kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
 		});
-		const exchange = new URLSearchParams(requests[0]!.body);
-		expect(exchange.get("grant_type")).toBe("authorization_code");
-		expect(exchange.get("code_verifier")).toBeTruthy();
-		expect(requests[1]).toMatchObject({ url: "https://management.us-east-1.kiro.dev/" });
-		await expect(
-			loginKiroBrowser({ ...callbacks, fetch: async () => json({ error: "denied" }, 400) }, config),
-		).rejects.toMatchObject({ kind: "token-exchange" });
+		expect(requests[0]).toEqual({
+			url: "https://oidc.us-east-1.amazonaws.com/client/register",
+			body: {
+				clientName: "oh-my-pi",
+				clientType: "public",
+				scopes: ["scope"],
+				grantTypes: ["authorization_code", "refresh_token"],
+				issuerUrl: "https://view.awsapps.com/start",
+				redirectUris: [callbackUri],
+			},
+		});
+		expect(callbackUri).toMatch(/^http:\/\/localhost:\d+\/oauth\/callback$/);
+		expect(requests[1]?.body).toMatchObject({
+			clientId: "client",
+			clientSecret: "secret",
+			code: "code",
+			grantType: "authorization_code",
+			redirectUri: callbackUri,
+		});
+		expect(requests[1]?.body.codeVerifier).toBeTruthy();
+		expect(requests[2]?.url).toBe("https://management.us-east-1.kiro.dev/");
 		const cancelled = new AbortController();
 		cancelled.abort("cancelled");
 		await expect(loginKiroBrowser({ ...callbacks, signal: cancelled.signal }, config)).rejects.toBeInstanceOf(
@@ -181,7 +215,7 @@ describe("isolated Kiro authentication", () => {
 		);
 	});
 
-	it("matches the captured Builder ID device request bodies", async () => {
+	it("matches the captured AWS OIDC device request bodies", async () => {
 		const requests: Array<{ url: string; contentType: string | null; body: unknown }> = [];
 		const responses = [
 			json({
@@ -205,14 +239,16 @@ describe("isolated Kiro authentication", () => {
 				onAuth: () => {},
 				onPrompt: async () => "",
 				fetch: async (input, init) => {
-					const contentType = new Headers(init?.headers).get("content-type");
-					requests.push({ url: String(input), contentType, body: JSON.parse(String(init?.body)) as unknown });
+					requests.push({
+						url: String(input),
+						contentType: new Headers(init?.headers).get("content-type"),
+						body: JSON.parse(String(init?.body)) as unknown,
+					});
 					return responses.shift()!;
 				},
 			},
-			{ kind: "builder-id", region: "us-east-1", scopes: ["scope"], pollIntervalMs: 1 },
+			{ region: "us-east-1", scopes: ["scope"], pollIntervalMs: 1 },
 		);
-
 		expect(requests.slice(0, 3)).toEqual([
 			{
 				url: "https://oidc.us-east-1.amazonaws.com/client/register",
@@ -237,114 +273,68 @@ describe("isolated Kiro authentication", () => {
 		]);
 		expect(loggedIn).toMatchObject({
 			orgId: profileArn,
-			kiroAuthMethod: "builder-id",
+			kiroAuthMethod: "device",
 			kiroClientSecretExpiresAt: 4_000_000_000_000,
 		});
 	});
 
-	it("completes, rejects, cancels, and bounds desktop device polling", async () => {
-		const responses = [
+	it("rejects, cancels, and bounds AWS OIDC device polling", async () => {
+		const registration = () =>
+			json({
+				clientId: "client",
+				clientSecret: "secret",
+				tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+			});
+		const authorization = () =>
 			json({
 				deviceCode: "device",
 				userCode: "user",
 				verificationUri: "https://example.test",
-				expiresInMilliseconds: 1000,
-				intervalInMilliseconds: 1,
-			}),
-			json({ status: "authorized", accessToken: "access", refreshToken: "refresh", expiresIn: 3600, profileArn }),
-		];
-		const callbacks = { onAuth: () => {}, onPrompt: async () => "", fetch: async () => responses.shift()! };
-		expect(
-			(await loginKiroDevice(callbacks, { kind: "google", region: "us-east-1", appId: "app", pollIntervalMs: 1 }))
-				.orgId,
-		).toBe(profileArn);
-		const denied = [
-			json({
-				deviceCode: "device",
-				userCode: "user",
-				verificationUri: "https://example.test",
-				expiresInMilliseconds: 1000,
-				intervalInMilliseconds: 1,
-			}),
-			json({ status: "denied" }, 400),
-		];
+				expiresIn: 60,
+				interval: 1,
+			});
+		const denied = [registration(), authorization(), json({ error: "access_denied" }, 400)];
 		await expect(
 			loginKiroDevice(
-				{ ...callbacks, fetch: async () => denied.shift()! },
-				{ kind: "github", region: "us-east-1", appId: "app", pollIntervalMs: 1 },
+				{ onAuth: () => {}, onPrompt: async () => "", fetch: async () => denied.shift()! },
+				{ region: "us-east-1", maxPolls: 1, pollIntervalMs: 1 },
 			),
 		).rejects.toMatchObject({ kind: "device-auth" });
 		const controller = new AbortController();
 		controller.abort();
 		await expect(
 			loginKiroDevice(
-				{ ...callbacks, signal: controller.signal },
-				{ kind: "google", region: "us-east-1", appId: "app" },
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch: async () => registration(),
+					signal: controller.signal,
+				},
+				{ region: "us-east-1" },
 			),
 		).rejects.toBeInstanceOf(AIError.LoginCancelledError);
-		const pending = [
-			json({
-				deviceCode: "device",
-				userCode: "user",
-				verificationUri: "https://example.test",
-				expiresInMilliseconds: 1000,
-				intervalInMilliseconds: 1,
-			}),
-			json({ status: "authorization_pending" }, 429),
-		];
+		const pending = [registration(), authorization(), json({ error: "authorization_pending" }, 400)];
 		await expect(
 			loginKiroDevice(
-				{ ...callbacks, fetch: async () => pending.shift()! },
-				{ kind: "google", region: "us-east-1", appId: "app", maxPolls: 1, pollIntervalMs: 1 },
+				{ onAuth: () => {}, onPrompt: async () => "", fetch: async () => pending.shift()! },
+				{ region: "us-east-1", maxPolls: 1, pollIntervalMs: 1 },
 			),
 		).rejects.toMatchObject({ kind: "timeout" });
 	});
 
-	it("uses each refresh protocol and preserves selected profile state", async () => {
-		const cases = [
-			{
-				credential: {
-					kiroClientId: "client",
-					kiroClientSecret: "secret",
-					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-					kiroClientSecretExpiresAt: 4_000_000_000_000,
-					kiroAuthMethod: "builder-id" as const,
-				},
-				contentType: "application/json",
-				body: JSON.stringify({
-					grantType: "refresh_token",
-					refreshToken: "refresh",
-					clientId: "client",
-					clientSecret: "secret",
-				}),
-			},
-			{
-				credential: {
-					kiroClientId: "app",
-					kiroTokenEndpoint: "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
-					kiroAuthMethod: "google" as const,
-				},
-				contentType: "application/json",
-				body: JSON.stringify({ refreshToken: "refresh" }),
-			},
-			{
-				credential: {
-					kiroClientId: "client",
-					kiroTokenEndpoint: "https://auth.us-east-1.kiro.dev/oauth/token",
-					kiroAuthMethod: "browser" as const,
-				},
-				contentType: "application/x-www-form-urlencoded",
-				body: "grant_type=refresh_token&refresh_token=refresh&client_id=client",
-			},
-		] as const;
-		for (const testCase of cases) {
+	it("uses the registered-client refresh protocol and preserves selected profile state", async () => {
+		for (const method of ["device", "browser"] as const) {
 			let request: RequestInit | undefined;
 			const refreshed = await refreshKiroToken(
 				{
 					refresh: "refresh",
 					access: "old",
 					expires: 0,
-					...testCase.credential,
+					kiroClientId: "client",
+					kiroClientSecret: "secret",
+					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+					kiroClientSecretExpiresAt: 4_000_000_000_000,
+					kiroAuthMethod: method,
 					orgId: profileArn,
 					orgName: "Example",
 				},
@@ -355,22 +345,27 @@ describe("isolated Kiro authentication", () => {
 					},
 				},
 			);
-			expect(new Headers(request?.headers).get("content-type")).toBe(testCase.contentType);
-			expect(String(request?.body)).toBe(testCase.body);
+			expect(new Headers(request?.headers).get("content-type")).toBe("application/json");
+			expect(String(request?.body)).toBe(
+				JSON.stringify({
+					grantType: "refresh_token",
+					refreshToken: "refresh",
+					clientId: "client",
+					clientSecret: "secret",
+				}),
+			);
 			expect(refreshed).toMatchObject({
 				access: "new",
 				refresh: "refresh",
 				orgId: profileArn,
 				orgName: "Example",
-				kiroAuthMethod: testCase.credential.kiroAuthMethod,
+				kiroAuthMethod: method,
+				kiroClientSecretExpiresAt: 4_000_000_000_000,
 			});
-			if (testCase.credential.kiroAuthMethod === "builder-id") {
-				expect(refreshed.kiroClientSecretExpiresAt).toBe(4_000_000_000_000);
-			}
 		}
 	});
 
-	it("rejects refresh after the Builder ID registered client expires", async () => {
+	it("rejects refresh after the registered client expires", async () => {
 		let requested = false;
 		await expect(
 			refreshKiroToken(
@@ -382,7 +377,7 @@ describe("isolated Kiro authentication", () => {
 					kiroClientSecret: "secret",
 					kiroClientSecretExpiresAt: Date.now() - 1,
 					kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-					kiroAuthMethod: "builder-id",
+					kiroAuthMethod: "device",
 				},
 				{
 					fetch: async () => {
