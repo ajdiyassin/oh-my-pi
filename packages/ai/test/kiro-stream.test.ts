@@ -8,6 +8,7 @@ import type {
 	FetchImpl,
 	Model,
 	ModelSpec,
+	Tool,
 	ToolResultMessage,
 } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -206,6 +207,82 @@ describe("Kiro request transforms", () => {
 		});
 	});
 
+	it("preserves system and message content without Handlebars escaping", () => {
+		const system = 'System <policy> & "quoted" {{rule}}';
+		const content = 'Use <xml attr="value"> & {{literal}}';
+		const request = transformKiroRequest(model, { systemPrompt: [system], messages: [user(content)] });
+		expect(request.conversationState.currentMessage.userInputMessage.content).toBe(`${system}\n\n${content}`);
+	});
+
+	it("preserves system-only and message-only request boundaries", () => {
+		const systemOnly = transformKiroRequest(model, { systemPrompt: ["System only"], messages: [] });
+		const messageOnly = transformKiroRequest(model, { messages: [user("Message only")] });
+		expect(systemOnly.conversationState.currentMessage.userInputMessage.content).toBe("System only");
+		expect(messageOnly.conversationState.currentMessage.userInputMessage.content).toBe("Message only");
+	});
+
+	it("keeps adjacent history, thinking wrappers, and dynamic characters intact", () => {
+		const assistant: AssistantMessage = {
+			...assistantWithTool("wrapped-tool"),
+			content: [
+				{ type: "thinking", thinking: "first <step> & {{value}}" },
+				{ type: "thinking", thinking: 'second "step"' },
+				{ type: "text", text: "answer <body> & {{text}}" },
+			],
+			stopReason: "stop",
+		};
+		const request = transformKiroRequest(model, {
+			systemPrompt: ["System & <root>"],
+			messages: [user("first {{message}}"), user("second & <message>"), assistant, user("current")],
+		});
+		const history = request.conversationState.history ?? [];
+		expect(history[0].userInputMessage?.content).toBe("System & <root>\n\nfirst {{message}}\n\nsecond & <message>");
+		expect(history[1].assistantResponseMessage?.content).toBe(
+			'<thinking>first <step> & {{value}}</thinking>\n\n<thinking>second "step"</thinking>\n\nanswer <body> & {{text}}',
+		);
+	});
+
+	it("uses generated tool-result and continuation prompts without changing result content", () => {
+		const resultContent = 'result <xml> & "quoted" {{braces}}';
+		const withResult = transformKiroRequest(model, {
+			messages: [assistantWithTool("result-tool"), toolResult("result-tool", resultContent)],
+		});
+		expect(withResult.conversationState.currentMessage.userInputMessage.content).toBe("Tool results provided.");
+		expect(
+			withResult.conversationState.currentMessage.userInputMessage.userInputMessageContext?.toolResults?.[0]
+				?.content,
+		).toEqual([{ text: resultContent }]);
+
+		const continuation = transformKiroRequest(model, { messages: [assistantWithTool("continue-tool")] });
+		expect(continuation.conversationState.currentMessage.userInputMessage.content).toBe(
+			"Please proceed with the task.",
+		);
+	});
+
+	it("renders default and historical tool descriptions from semantic inputs", () => {
+		const emptyDescriptionTool = {
+			name: "search",
+			description: "",
+			parameters: { type: "object", properties: {} },
+		} satisfies Tool;
+		const active = transformKiroRequest(model, {
+			messages: [user("find")],
+			tools: [emptyDescriptionTool],
+		});
+		expect(
+			active.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools?.[0]?.toolSpecification
+				.description,
+		).toBe("Use the search tool.");
+
+		const historical = transformKiroRequest(model, {
+			messages: [user("old"), assistantWithTool("old-tool"), toolResult("old-tool"), user("new")],
+		});
+		expect(
+			historical.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools?.[0]
+				?.toolSpecification.description,
+		).toBe("Tool used in conversation history.");
+	});
+
 	it("omits model reasoning fields when reasoning is disabled", () => {
 		const request = transformKiroRequest(model, { messages: [user("plain response")] }, { disableReasoning: true });
 		expect(request.additionalModelRequestFields).toBeUndefined();
@@ -362,6 +439,82 @@ describe("Kiro native stream", () => {
 		expect(result.duration).toBeNumber();
 		expect(result.duration!).toBeGreaterThanOrEqual(result.ttft!);
 	});
+
+	it("merges custom headers case-insensitively while protecting Kiro protocol headers", async () => {
+		const headerModel: Model<"kiro-api"> = {
+			...model,
+			headers: {
+				"X-Model-Only": "model",
+				"X-Shared": "model",
+				Authorization: "Bearer model-override",
+				"Content-Type": "model/type",
+				"X-Amzn-CodeWhisperer-OptOut": "false",
+				"User-Agent": "model-agent",
+			},
+		};
+		const requests: Array<{ headers: Headers; body: string; signal: AbortSignal | null | undefined }> = [];
+		let calls = 0;
+		const { result } = await drain(
+			streamKiro(
+				headerModel,
+				{ messages: [user("header payload")] },
+				{
+					apiKey: "ksk_resolved",
+					headers: {
+						"x-shared": "request",
+						"X-Request-Only": "request",
+						"X-Trace-Experiment": "preserved",
+						aUtHoRiZaTiOn: "Bearer caller-override",
+						accept: "caller/accept",
+						"content-type": "caller/type",
+						"X-AMZ-TARGET": "Caller.Target",
+						"x-amzn-codewhisperer-optout": "false",
+						"AMZ-SDK-INVOCATION-ID": "caller-id",
+						"AMZ-SDK-REQUEST": "caller-request",
+						"USER-AGENT": "caller-agent",
+					},
+					providerRetryWait: async () => {},
+					fetch: async (_input, init) => {
+						calls++;
+						requests.push({
+							headers: new Headers(init?.headers),
+							body: String(init?.body),
+							signal: init?.signal,
+						});
+						if (calls === 1) {
+							return new Response(JSON.stringify({ __type: "INSUFFICIENT_MODEL_CAPACITY" }), { status: 503 });
+						}
+						return eventResponse(normalFrames());
+					},
+				},
+			),
+		);
+		expect(result.stopReason).toBe("stop");
+		expect(requests).toHaveLength(2);
+		for (const request of requests) {
+			expect(request.headers.get("x-model-only")).toBe("model");
+			expect(request.headers.get("x-shared")).toBe("request");
+			expect(request.headers.get("x-request-only")).toBe("request");
+			expect(request.headers.get("x-trace-experiment")).toBe("preserved");
+			expect(request.headers.get("authorization")).toBe("Bearer ksk_resolved");
+			expect(request.headers.get("content-type")).toBe("application/x-amz-json-1.0");
+			expect(request.headers.get("accept")).toBe("application/vnd.amazon.eventstream");
+			expect(request.headers.get("x-amz-target")).toBe("KiroRuntimeService.GenerateAssistantResponse");
+			expect(request.headers.get("x-amzn-codewhisperer-optout")).toBe("true");
+			expect(request.headers.get("amz-sdk-request")).toBe("attempt=1; max=1");
+			expect(request.headers.get("amz-sdk-invocation-id")).not.toBe("caller-id");
+			expect(request.headers.get("user-agent")).not.toBe("caller-agent");
+			expect([...request.headers.keys()].filter(key => key.toLowerCase() === "authorization")).toHaveLength(1);
+			expect(JSON.parse(request.body)).toMatchObject({
+				conversationState: { currentMessage: { userInputMessage: { content: "header payload" } } },
+			});
+			expect(request.signal).toBeInstanceOf(AbortSignal);
+		}
+		expect(requests[0].headers.get("amz-sdk-invocation-id")).not.toBe(
+			requests[1].headers.get("amz-sdk-invocation-id"),
+		);
+	});
+
 	it("maps a terminal stop reason carried on metadataEvent and tolerates live meteringEvent frames", async () => {
 		// Live captures (CLI v3 and Desktop/IDE) report `stopReason` on `metadataEvent`
 		// while `assistantResponseEvent` carries content only, and emit a

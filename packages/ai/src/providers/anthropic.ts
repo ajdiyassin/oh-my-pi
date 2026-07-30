@@ -57,6 +57,7 @@ import {
 import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { isFoundryEnabled } from "../utils/foundry";
+import { mergeHeaders } from "../utils/headers";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 import { notifyProviderResponse } from "../utils/provider-response";
@@ -1374,25 +1375,6 @@ function buildClaudeCodeTlsFetchOptions(
 		},
 	};
 }
-function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]): Record<string, string> {
-	// Case-insensitive merge: later sources win and keep their casing. A plain
-	// Object.assign would let `authorization` and `Authorization` coexist, and
-	// the Headers constructor then joins both values comma-separated on the wire.
-	const merged: Record<string, string> = {};
-	const keyByLower = new Map<string, string>();
-	for (const headers of headerSources) {
-		if (!headers) continue;
-		for (const [key, value] of Object.entries(headers)) {
-			const lower = key.toLowerCase();
-			const existing = keyByLower.get(lower);
-			if (existing !== undefined && existing !== key) delete merged[existing];
-			keyByLower.set(lower, key);
-			merged[key] = value;
-		}
-	}
-	return merged;
-}
-
 const ANTHROPIC_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
 	"message_start",
 	"message_delta",

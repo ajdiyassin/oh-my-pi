@@ -31,6 +31,41 @@ function modelCatalog() {
 	};
 }
 
+function registeredClient(region: string) {
+	return {
+		clientId: `client-${region}`,
+		clientSecret: `secret-${region}`,
+		clientSecretExpiresAt: 4_000_000_000,
+		authorizationEndpoint: `https://oidc.${region}.amazonaws.com/authorize`,
+		tokenEndpoint: `https://oidc.${region}.amazonaws.com/token`,
+	};
+}
+
+function deviceAuthorization() {
+	return {
+		deviceCode: "synthetic-device",
+		userCode: "SYNTHETIC",
+		verificationUri: "https://verification.example.test",
+		expiresIn: 60,
+		interval: 1,
+	};
+}
+
+function oauthToken() {
+	return { accessToken: "synthetic-access", refreshToken: "synthetic-refresh", expiresIn: 3600 };
+}
+
+function regionalProfile(region: string) {
+	return {
+		profiles: [
+			{
+				arn: `arn:aws:codewhisperer:${region}:123456789012:profile/synthetic`,
+				profileName: "Synthetic",
+			},
+		],
+	};
+}
+
 describe("isolated Kiro authentication", () => {
 	it("validates an API key only when exactly one bootstrap route succeeds", async () => {
 		const fetch = async (input: string | URL | Request) =>
@@ -141,6 +176,68 @@ describe("isolated Kiro authentication", () => {
 		).rejects.toBeInstanceOf(AIError.OAuthError);
 	});
 
+	it("normalizes cancellation after method and API-key prompts without validating", async () => {
+		for (const cancelledPrompt of ["method", "api-key"] as const) {
+			const controller = new AbortController();
+			let prompts = 0;
+			let validationRequests = 0;
+			await expect(
+				kiroProvider.login({
+					onAuth: () => {},
+					signal: controller.signal,
+					onPrompt: async () => {
+						prompts++;
+						if (cancelledPrompt === "api-key" && prompts === 1) return "3";
+						controller.abort();
+						return "";
+					},
+					fetch: async () => {
+						validationRequests++;
+						return json(modelCatalog());
+					},
+				}),
+			).rejects.toBeInstanceOf(AIError.LoginCancelledError);
+			expect(validationRequests).toBe(0);
+		}
+	});
+
+	it("retains validation errors for empty prompt answers when not cancelled", async () => {
+		await expect(kiroProvider.login({ onAuth: () => {}, onPrompt: async () => "" })).rejects.toMatchObject({
+			kind: "validation",
+		});
+		let prompts = 0;
+		await expect(
+			kiroProvider.login({
+				onAuth: () => {},
+				onPrompt: async () => (++prompts === 1 ? "3" : ""),
+			}),
+		).rejects.toMatchObject({ kind: "validation" });
+	});
+
+	it("normalizes cancellation after multi-profile selection", async () => {
+		const controller = new AbortController();
+		let discoveryRequests = 0;
+		await expect(
+			selectKiroProfile("synthetic-token", "us-east-1", {
+				signal: controller.signal,
+				fetch: async () => {
+					discoveryRequests++;
+					return json({
+						profiles: [
+							{ arn: profileArn, profileName: "Primary" },
+							{ arn: profileArn.replace("example", "secondary"), profileName: "Secondary" },
+						],
+					});
+				},
+				onPrompt: async () => {
+					controller.abort();
+					return "";
+				},
+			}),
+		).rejects.toBeInstanceOf(AIError.LoginCancelledError);
+		expect(discoveryRequests).toBe(1);
+	});
+
 	it("registers the actual loopback redirect before browser PKCE token exchange", async () => {
 		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
 		let callbackUri = "";
@@ -215,6 +312,140 @@ describe("isolated Kiro authentication", () => {
 		);
 	});
 
+	it("continues browser region probing after empty, HTML, and JSON rejections", async () => {
+		const rejections = [
+			() => new Response(null, { status: 400 }),
+			() => new Response("<html>denied</html>", { status: 403, headers: { "content-type": "text/html" } }),
+			() => json({ error: "invalid_request" }, 400),
+		];
+		for (const rejection of rejections) {
+			const registrationRegions: string[] = [];
+			const callbacks = {
+				onAuth: ({ url }: { url: string }) => {
+					const authorization = new URL(url);
+					const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+					callback.searchParams.set("code", "synthetic-code");
+					callback.searchParams.set("state", authorization.searchParams.get("state")!);
+					void globalThis.fetch(callback);
+				},
+				onPrompt: async () => "",
+				fetch: async (input: string | URL | Request) => {
+					const url = String(input);
+					if (url.endsWith("/client/register")) {
+						const region = new URL(url).hostname.split(".")[1]!;
+						registrationRegions.push(region);
+						return region === "us-east-1" ? rejection() : json(registeredClient(region));
+					}
+					if (url.endsWith("/token")) return json(oauthToken());
+					return json(regionalProfile("eu-central-1"));
+				},
+			};
+			const loggedIn = await loginKiroBrowser(callbacks, {
+				issuerUrl: "https://view.awsapps.com/start",
+				preferredPort: 0,
+				scopes: ["scope"],
+			});
+			expect(registrationRegions).toEqual(["us-east-1", "eu-central-1"]);
+			expect(loggedIn.orgId).toBe("arn:aws:codewhisperer:eu-central-1:123456789012:profile/synthetic");
+		}
+	});
+
+	it("preserves cancellation from browser and manual callback interactions", async () => {
+		for (const manualInputOnly of [false, true]) {
+			const controller = new AbortController();
+			let requests = 0;
+			await expect(
+				loginKiroBrowser(
+					{
+						onAuth: () => {
+							if (!manualInputOnly) controller.abort();
+						},
+						onPrompt: async () => "",
+						onManualCodeInput: manualInputOnly
+							? async () => {
+									controller.abort();
+									return "";
+								}
+							: undefined,
+						signal: controller.signal,
+						fetch: async () => {
+							requests++;
+							return json(registeredClient("us-east-1"));
+						},
+					},
+					{
+						issuerUrl: "https://view.awsapps.com/start",
+						region: "us-east-1",
+						preferredPort: 0,
+						scopes: ["scope"],
+						manualInputOnly,
+					},
+				),
+			).rejects.toBeInstanceOf(AIError.LoginCancelledError);
+			expect(requests).toBe(1);
+		}
+	});
+
+	it("fails closed on malformed successful browser registration and stops on cancellation", async () => {
+		const malformedRegions: string[] = [];
+		await expect(
+			loginKiroBrowser(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch: async input => {
+						malformedRegions.push(String(input));
+						return new Response("<html>unexpected success</html>", { status: 200 });
+					},
+				},
+				{ issuerUrl: "https://view.awsapps.com/start", preferredPort: 0, scopes: ["scope"] },
+			),
+		).rejects.toThrow("invalid JSON");
+		expect(malformedRegions).toHaveLength(1);
+
+		const controller = new AbortController();
+		const cancelledRegions: string[] = [];
+		await expect(
+			loginKiroBrowser(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					signal: controller.signal,
+					fetch: async input => {
+						cancelledRegions.push(String(input));
+						controller.abort();
+						return new Response(null, { status: 400 });
+					},
+				},
+				{ issuerUrl: "https://view.awsapps.com/start", preferredPort: 0, scopes: ["scope"] },
+			),
+		).rejects.toBeInstanceOf(AIError.LoginCancelledError);
+		expect(cancelledRegions).toHaveLength(1);
+	});
+
+	it("does not expand an explicit browser region into the discovery list", async () => {
+		const requested: string[] = [];
+		await expect(
+			loginKiroBrowser(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch: async input => {
+						requested.push(String(input));
+						return new Response(null, { status: 403 });
+					},
+				},
+				{
+					issuerUrl: "https://view.awsapps.com/start",
+					region: "ap-south-1",
+					preferredPort: 0,
+					scopes: ["scope"],
+				},
+			),
+		).rejects.toBeInstanceOf(AIError.OAuthError);
+		expect(requested).toEqual(["https://oidc.ap-south-1.amazonaws.com/client/register"]);
+	});
+
 	it("matches the captured AWS OIDC device request bodies", async () => {
 		const requests: Array<{ url: string; contentType: string | null; body: unknown }> = [];
 		const responses = [
@@ -276,6 +507,118 @@ describe("isolated Kiro authentication", () => {
 			kiroAuthMethod: "device",
 			kiroClientSecretExpiresAt: 4_000_000_000_000,
 		});
+	});
+
+	it("continues device region probing after empty, HTML, and JSON rejections", async () => {
+		const rejections = [
+			() => new Response(null, { status: 400 }),
+			() => new Response("<html>denied</html>", { status: 403, headers: { "content-type": "text/html" } }),
+			() => json({ error: "invalid_request" }, 400),
+		];
+		for (const rejection of rejections) {
+			const registrationRegions: string[] = [];
+			const loggedIn = await loginKiroDevice(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch: async input => {
+						const url = String(input);
+						const region = new URL(url).hostname.split(".")[1]!;
+						if (url.endsWith("/client/register")) {
+							registrationRegions.push(region);
+							return region === "us-east-1" ? rejection() : json(registeredClient(region));
+						}
+						if (url.endsWith("/device_authorization")) return json(deviceAuthorization());
+						if (url.endsWith("/token")) return json(oauthToken());
+						return json(regionalProfile("eu-central-1"));
+					},
+				},
+				{ scopes: ["scope"], pollIntervalMs: 1 },
+			);
+			expect(registrationRegions).toEqual(["us-east-1", "eu-central-1"]);
+			expect(loggedIn.orgId).toBe("arn:aws:codewhisperer:eu-central-1:123456789012:profile/synthetic");
+		}
+	});
+
+	it("stops device authorization immediately when its interaction is cancelled", async () => {
+		const controller = new AbortController();
+		const requested: string[] = [];
+		await expect(
+			loginKiroDevice(
+				{
+					onAuth: () => controller.abort(),
+					onPrompt: async () => "",
+					signal: controller.signal,
+					fetch: async input => {
+						const url = String(input);
+						requested.push(url);
+						if (url.endsWith("/client/register")) return json(registeredClient("us-east-1"));
+						if (url.endsWith("/device_authorization")) return json(deviceAuthorization());
+						return json(oauthToken());
+					},
+				},
+				{ region: "us-east-1", scopes: ["scope"], pollIntervalMs: 1 },
+			),
+		).rejects.toBeInstanceOf(AIError.LoginCancelledError);
+		expect(requested).toEqual([
+			"https://oidc.us-east-1.amazonaws.com/client/register",
+			"https://oidc.us-east-1.amazonaws.com/device_authorization",
+		]);
+	});
+
+	it("fails closed on malformed successful device registration and stops on cancellation", async () => {
+		const malformedRegions: string[] = [];
+		await expect(
+			loginKiroDevice(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch: async input => {
+						malformedRegions.push(String(input));
+						return new Response("<html>unexpected success</html>", { status: 200 });
+					},
+				},
+				{ scopes: ["scope"], pollIntervalMs: 1 },
+			),
+		).rejects.toThrow("invalid JSON");
+		expect(malformedRegions).toHaveLength(1);
+
+		const controller = new AbortController();
+		const cancelledRegions: string[] = [];
+		await expect(
+			loginKiroDevice(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					signal: controller.signal,
+					fetch: async input => {
+						cancelledRegions.push(String(input));
+						controller.abort();
+						return new Response(null, { status: 400 });
+					},
+				},
+				{ scopes: ["scope"] },
+			),
+		).rejects.toBeInstanceOf(AIError.LoginCancelledError);
+		expect(cancelledRegions).toHaveLength(1);
+	});
+
+	it("does not expand an explicit device region into the discovery list", async () => {
+		const requested: string[] = [];
+		await expect(
+			loginKiroDevice(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch: async input => {
+						requested.push(String(input));
+						return new Response(null, { status: 403 });
+					},
+				},
+				{ region: "ap-south-1", scopes: ["scope"] },
+			),
+		).rejects.toBeInstanceOf(AIError.OAuthError);
+		expect(requested).toEqual(["https://oidc.ap-south-1.amazonaws.com/client/register"]);
 	});
 
 	it("rejects, cancels, and bounds AWS OIDC device polling", async () => {

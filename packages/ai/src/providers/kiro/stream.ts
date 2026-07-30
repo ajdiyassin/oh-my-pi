@@ -11,6 +11,7 @@ import type {
 	ThinkingContent,
 } from "../../types";
 import { AssistantMessageEventStream as MessageEventStream } from "../../utils/event-stream";
+import { mergeHeaders } from "../../utils/headers";
 import {
 	armPreResponseTimeout,
 	getStreamFirstEventTimeoutMs,
@@ -358,16 +359,16 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 				try {
 					response = await (options.fetch ?? globalThis.fetch)(route.baseUrl, {
 						method: "POST",
-						headers: {
+						headers: mergeHeaders(model.headers, options.headers, {
 							"content-type": "application/x-amz-json-1.0",
 							accept: "application/vnd.amazon.eventstream",
 							authorization: `Bearer ${credential.token}`,
 							"x-amz-target": KIRO_RUNTIME_TARGET,
-							"x-amzn-codewhisperer-optout": "false",
+							"x-amzn-codewhisperer-optout": "true",
 							"amz-sdk-invocation-id": crypto.randomUUID(),
 							"amz-sdk-request": "attempt=1; max=1",
 							"user-agent": KIRO_USER_AGENT,
-						},
+						}),
 						body: JSON.stringify(payload),
 						signal: watchdog.signal,
 					});

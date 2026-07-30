@@ -1,4 +1,5 @@
 import * as AIError from "../error";
+import { throwIfKiroLoginCancelled } from "./kiro-cancellation";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
 
@@ -13,30 +14,38 @@ export const kiroProvider = {
 			message: "Choose Kiro authentication: 1) Browser OAuth 2) Device code 3) API key",
 			placeholder: "1",
 		});
+		throwIfKiroLoginCancelled(callbacks.signal);
 		const choice = method.trim();
 		if (choice === "3") {
 			const apiKey = await callbacks.onPrompt({ message: "Paste your Kiro API key", placeholder: "ksk_..." });
+			throwIfKiroLoginCancelled(callbacks.signal);
 			// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 			const { validateKiroApiKey } = await import("./oauth/kiro");
-			return validateKiroApiKey(apiKey, {
+			const result = await validateKiroApiKey(apiKey, {
 				fetch: callbacks.fetch,
 				signal: callbacks.signal,
 				apiRegion: Bun.env.KIRO_API_REGION,
 			});
+			throwIfKiroLoginCancelled(callbacks.signal);
+			return result;
 		}
 		if (choice === "1") {
 			// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 			const { loginKiroBrowser } = await import("./oauth/kiro");
-			return loginKiroBrowser(callbacks, {
+			const result = await loginKiroBrowser(callbacks, {
 				issuerUrl: "https://view.awsapps.com/start",
 				preferredPort: 0,
 				scopes: KIRO_SCOPES,
 			});
+			throwIfKiroLoginCancelled(callbacks.signal);
+			return result;
 		}
 		if (choice === "2") {
 			// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 			const { loginKiroDevice } = await import("./oauth/kiro");
-			return loginKiroDevice(callbacks, { scopes: KIRO_SCOPES });
+			const result = await loginKiroDevice(callbacks, { scopes: KIRO_SCOPES });
+			throwIfKiroLoginCancelled(callbacks.signal);
+			return result;
 		}
 		throw new AIError.OAuthError("Invalid Kiro authentication selection", {
 			kind: "validation",
