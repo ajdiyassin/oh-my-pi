@@ -1,4 +1,3 @@
-import { scheduler } from "node:timers/promises";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { parseKiroEndpoint, parseKiroProfileArn } from "@oh-my-pi/pi-catalog/wire/kiro";
 import * as AIError from "../../error";
@@ -29,6 +28,18 @@ import type { KiroOptions, KiroStreamCredential, KiroUsageMetrics } from "./type
 const KIRO_RUNTIME_TARGET = "KiroRuntimeService.GenerateAssistantResponse";
 const KIRO_USER_AGENT = "oh-my-pi/kiro-api";
 const MAX_PRE_OUTPUT_RECOVERY_ATTEMPTS = 1;
+/**
+ * Kiro can spend well over OMP's shared 100s first-event floor on prompt
+ * processing plus adaptive-thinking warm-up before the first semantic frame.
+ * Supplied as the shared helper's per-provider fallback, so
+ * `PI_STREAM_FIRST_EVENT_TIMEOUT_MS` and per-call overrides still win.
+ */
+const KIRO_FIRST_EVENT_TIMEOUT_MS = 90_000;
+/**
+ * Long reasoning runs go quiet between semantic frames for far longer than the
+ * shared 120s idle floor. Same precedence rules as the first-event fallback.
+ */
+const KIRO_STREAM_IDLE_TIMEOUT_MS = 300_000;
 const INLINE_THINKING_TAGS: ReadonlyArray<readonly [string, string]> = [
 	["<thinking>", "</thinking>"],
 	["<think>", "</think>"],
@@ -282,8 +293,25 @@ function createAttempt(model: Model, stream: AssistantMessageEventStream, timest
 
 async function waitBeforeRecovery(options: KiroOptions | undefined, signal: AbortSignal | undefined): Promise<void> {
 	const delayMs = 500;
-	if (options?.providerRetryWait) await options.providerRetryWait(delayMs, signal);
-	else await scheduler.wait(delayMs, { signal });
+	if (options?.providerRetryWait) {
+		await options.providerRetryWait(delayMs, signal);
+		return;
+	}
+	signal?.throwIfAborted();
+	if (!signal) {
+		await Bun.sleep(delayMs);
+		return;
+	}
+	// `Bun.sleep` takes no signal, so race it against abort to keep pre-output
+	// recovery cancellable.
+	const aborted = Promise.withResolvers<never>();
+	const onAbort = () => aborted.reject(signal.reason);
+	signal.addEventListener("abort", onAbort, { once: true });
+	try {
+		await Promise.race([Bun.sleep(delayMs), aborted.promise]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
 }
 
 function isRecoverablePreOutputStreamFailure(error: unknown): boolean {
@@ -310,20 +338,22 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 				}
 			}
 			let recoveryAttempt = 0;
+			// Resolved once per request: caller option → env override → Kiro fallback.
+			const firstEventTimeoutMs =
+				options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(undefined, KIRO_FIRST_EVENT_TIMEOUT_MS);
+			const idleTimeoutMs = options.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(KIRO_STREAM_IDLE_TIMEOUT_MS);
 			while (true) {
 				state = createAttempt(model, stream, timestamp);
 				let payload = transformKiroRequest(model, context, {
 					reasoning: options.reasoning,
 					disableReasoning: options.disableReasoning,
 					hideThinkingSummary: options.hideThinkingSummary,
+					maxTokens: options.maxTokens,
 				});
 				if (credential.profileArn) payload.profileArn = credential.profileArn;
 				const replacement = await options.onPayload?.(payload, model);
 				if (replacement !== undefined) payload = replacement as typeof payload;
-				const watchdog = armPreResponseTimeout(
-					options.signal,
-					options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(),
-				);
+				const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
 				let response: Response;
 				try {
 					response = await (options.fetch ?? globalThis.fetch)(route.baseUrl, {
@@ -363,8 +393,8 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 				const readAbort = new AbortController();
 				const readSignal = options.signal ? AbortSignal.any([options.signal, readAbort.signal]) : readAbort.signal;
 				const frames = iterateWithIdleTimeout(decodeEventStream(response.body, readSignal), {
-					idleTimeoutMs: options.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(),
-					firstItemTimeoutMs: options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(),
+					idleTimeoutMs,
+					firstItemTimeoutMs: firstEventTimeoutMs,
 					errorMessage: "Kiro stream timed out while waiting for the next event",
 					firstItemErrorMessage: "Kiro stream timed out while waiting for the first event",
 					onIdle: () => readAbort.abort(),

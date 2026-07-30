@@ -140,6 +140,98 @@ describe("ModelRegistry runtime provider registration", () => {
 		expect(afterAnthropicCount).toBe(beforeAnthropicCount);
 	});
 
+	const KIRO_CONFLICT_MESSAGE =
+		"Kiro is built into this OMP version. Remove/disable the omp-provider-kiro extension and restart OMP; your OMP-managed Kiro login can then be configured with /login kiro.";
+
+	/**
+	 * The reserved-name guard used to live only inside `registerCustomApi` and
+	 * `registerOAuthProvider`, so a legacy extension shape carrying neither
+	 * `streamSimple` nor `oauth` reached `registerProvider` and replaced the
+	 * native Kiro model set.
+	 */
+	test("reserves the native Kiro provider name across every extension registration shape", () => {
+		const nativeKiroModels = registry.getAll().filter(model => model.provider === "kiro").length;
+
+		// 1) Custom-API shape.
+		expect(() =>
+			registry.registerProvider(
+				"kiro",
+				{
+					api: "kiro-legacy-api",
+					baseUrl: "https://example.invalid/",
+					apiKey: "KIRO_KEY",
+					streamSimple,
+					models: [{ ...baseModel, id: "legacy-kiro" }],
+				},
+				"ext://kiro-legacy",
+			),
+		).toThrow(KIRO_CONFLICT_MESSAGE);
+
+		// 2) OAuth-only shape.
+		expect(() =>
+			registry.registerProvider(
+				"kiro",
+				{ oauth: { name: "Kiro (legacy)" } } as unknown as ProviderConfigInput,
+				"ext://kiro-legacy",
+			),
+		).toThrow(KIRO_CONFLICT_MESSAGE);
+
+		// 3) Models + built-in API + apiKey, with neither streamSimple nor oauth:
+		//    the shape that previously slipped past both seams.
+		expect(() =>
+			registry.registerProvider(
+				"kiro",
+				{
+					api: "openai-completions",
+					baseUrl: "https://example.invalid/",
+					apiKey: "KIRO_KEY",
+					models: [{ ...baseModel, id: "legacy-kiro-models-only" }],
+				},
+				"ext://kiro-legacy",
+			),
+		).toThrow(KIRO_CONFLICT_MESSAGE);
+
+		// 4) Transport-override-only shape.
+		expect(() =>
+			registry.registerProvider("kiro", { baseUrl: "https://evil.invalid/" }, "ext://kiro-legacy"),
+		).toThrow(KIRO_CONFLICT_MESSAGE);
+
+		// Nothing was registered and the native catalog is untouched.
+		expect(getCustomApi("kiro-legacy-api")).toBeUndefined();
+		expect(registry.find("kiro", "legacy-kiro")).toBeUndefined();
+		expect(registry.find("kiro", "legacy-kiro-models-only")).toBeUndefined();
+		expect(registry.getAll().filter(model => model.provider === "kiro").length).toBe(nativeKiroModels);
+	});
+
+	test("isolates a rejected Kiro registration so unrelated extensions still load", () => {
+		const pending = [
+			{
+				name: "kiro",
+				config: {
+					api: "openai-completions",
+					baseUrl: "https://example.invalid/",
+					models: [{ ...baseModel, id: "legacy-kiro-drain" }],
+				} as ProviderConfigInput,
+				sourceId: "ext://kiro-legacy",
+			},
+			{
+				name: "unrelated-provider",
+				config: {
+					baseUrl: "https://unrelated.invalid/v1",
+					apiKey: "RUNTIME_KEY",
+					api: "openai-completions",
+					models: [{ ...baseModel, id: "unrelated-model" }],
+				} as ProviderConfigInput,
+				sourceId: "ext://runtime",
+			},
+		];
+
+		expect(() => registry.drainPendingProviderRegistrations(pending)).not.toThrow();
+		expect(registry.find("kiro", "legacy-kiro-drain")).toBeUndefined();
+		expect(registry.find("unrelated-provider", "unrelated-model")).toBeDefined();
+		expect(pending.length).toBe(0);
+	});
+
 	test("registerProvider rebuilds inferred computer capability after OpenAI runtime reroutes", async () => {
 		const modelId = "gpt-5.4";
 		const directModel = registry.find("openai", modelId);

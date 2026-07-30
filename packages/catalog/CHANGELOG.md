@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added unreachable Kiro Phase 1 route validation, bounded model discovery, schema-derived model mapping, exact historical aliases, and authoritative 24-hour model-cache options ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Registered `kiro` in the provider catalog with dynamic-discovery-authoritative models (`defaultModel: "auto"`, no static rows), so the native provider resolves entirely from live `ListAvailableModels` responses ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
+### Changed
+
+- Hardened Kiro discovery sanitization against prototype-polluting schema property names and required entries, and routed bounded management response reads through the shared reader ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- `kiroManagementRequest` accepts an explicit `X-Amz-Target` service prefix so profile-scoped `GetUsageLimits` can use the current `KiroControlPlaneBearerService` target while discovery keeps the legacy `AmazonCodeWhispererService` one ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
 ## [17.2.0] - 2026-07-30
 
 ### Added
@@ -58,16 +68,6 @@
 - Fixed forced `tool_choice` 400s (`tool_choice 'specified' is incompatible with thinking enabled`) on Kimi Code's Anthropic-compatible endpoint for the `kimi-for-coding`, `kimi-for-coding-highspeed`, and `k3` aliases: the Anthropic-surface compat matcher only recognised Moonshot's native `kimi-k2.7-code*` ids, so thinking-locked kimi-code models kept `supportsForcedToolChoice: true` and the forced selector was sent to a host that always thinks. These models now resolve `requiresThinkingEnabled`, keeping thinking on and downgrading forced choices to `auto`.
 - Retried empty successful provider discovery responses after the short non-authoritative interval instead of caching them for the full catalog TTL ([#6620](https://github.com/can1357/oh-my-pi/issues/6620)).
 - Fixed GitHub Copilot Claude models with no bundled catalog reference (e.g. a freshly served `claude-opus-5`) discovering with `reasoning: false`/`thinking: null` and no effort dial, and disappearing along with their synthesized `-1m` sibling on offline reads: reference-less Copilot models on the anthropic-messages proxy now derive the adaptive reasoning ladder from the model id, and the cache restores their compile-time `COPILOT_API_HEADERS` by value instead of dropping them as unrestorable ([#6664](https://github.com/can1357/oh-my-pi/issues/6664)).
-
-### Added
-
-- Added unreachable Kiro Phase 1 route validation, bounded model discovery, schema-derived model mapping, exact historical aliases, and authoritative 24-hour model-cache options ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Registered `kiro` in the provider catalog with dynamic-discovery-authoritative models (`defaultModel: "auto"`, no static rows), so the native provider resolves entirely from live `ListAvailableModels` responses ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-
-### Changed
-
-- Hardened Kiro discovery sanitization against prototype-polluting schema property names and required entries, and routed bounded management response reads through the shared reader ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- `kiroManagementRequest` accepts an explicit `X-Amz-Target` service prefix so profile-scoped `GetUsageLimits` can use the current `KiroControlPlaneBearerService` target while discovery keeps the legacy `AmazonCodeWhispererService` one ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ## [17.1.3] - 2026-07-24
 

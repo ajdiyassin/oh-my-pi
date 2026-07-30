@@ -435,8 +435,10 @@ export function resolveProviderModelReference(
 	}
 
 	if (normalizedProvider === "kiro") {
-		const legacyId = resolveKiroModelAlias(modelId.trim());
-		if (legacyId !== modelId.trim()) {
+		// The alias table is keyed by lowercase live ids, so the normalized id must
+		// be used: `kiro/CLAUDE-OPUS-4-8` has to resolve like its lowercase form.
+		const legacyId = resolveKiroModelAlias(normalizedModelId);
+		if (legacyId !== normalizedModelId) {
 			const aliased = index.get(`${normalizedProvider}\u0000${legacyId.toLowerCase()}`);
 			if (aliased) return aliased;
 		}

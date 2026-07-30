@@ -969,6 +969,13 @@ describe("Kiro legacy selector compatibility", () => {
 		expect(resolveModelFromString("kiro/claude-opus-4.8", [liveKiroModel])).toBe(liveKiroModel);
 		expect(resolveModelFromString("kiro/claude-opus-4-9", [liveKiroModel])).toBeUndefined();
 	});
+
+	test("resolves historical dashed IDs case-insensitively like every other selector", () => {
+		// The alias table is keyed by lowercase live ids; the surrounding lookup is
+		// already case-insensitive, so the compatibility path must match.
+		expect(resolveModelFromString("kiro/CLAUDE-OPUS-4-8", [liveKiroModel])).toBe(liveKiroModel);
+		expect(resolveModelFromString("kiro/Claude-Opus-4-8", [liveKiroModel])).toBe(liveKiroModel);
+	});
 });
 
 describe("resolveModelFromString", () => {

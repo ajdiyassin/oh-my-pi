@@ -36,6 +36,28 @@ const model: Model<"kiro-api"> = buildModel({
 	},
 } as ModelSpec<"kiro-api">);
 
+/**
+ * Live catalogs can advertise non-contiguous effort tiers. `medium` is missing
+ * here so clamp direction is observable.
+ */
+const gappedModel: Model<"kiro-api"> = buildModel({
+	id: "claude-opus-5",
+	name: "Claude Opus 5",
+	api: "kiro-api",
+	provider: "kiro",
+	baseUrl: "https://runtime.us-east-1.kiro.dev/",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200_000,
+	maxTokens: 64_000,
+	thinking: {
+		mode: "anthropic-adaptive",
+		efforts: [Effort.Low, Effort.High],
+		defaultLevel: Effort.High,
+	},
+} as ModelSpec<"kiro-api">);
+
 const user = (content: string) => ({ role: "user" as const, content, timestamp: Date.now() });
 
 function assistantWithTool(id: string): AssistantMessage {
@@ -187,6 +209,47 @@ describe("Kiro request transforms", () => {
 	it("omits model reasoning fields when reasoning is disabled", () => {
 		const request = transformKiroRequest(model, { messages: [user("plain response")] }, { disableReasoning: true });
 		expect(request.additionalModelRequestFields).toBeUndefined();
+	});
+
+	it("clamps an unsupported effort down to the greatest supported level", () => {
+		// `medium` is absent from the live schema. The shared clamp selects the
+		// greatest supported level at or below the request (`low`); raising it to
+		// `high` would silently increase reasoning usage and cost.
+		const request = transformKiroRequest(gappedModel, { messages: [user("gap")] }, { reasoning: Effort.Medium });
+		expect(request.additionalModelRequestFields).toEqual({
+			thinking: { type: "adaptive", display: "summarized" },
+			output_config: { effort: "low" },
+			max_tokens: 64_000,
+		});
+	});
+
+	it("clamps a below-range effort up to the lowest supported level", () => {
+		const request = transformKiroRequest(gappedModel, { messages: [user("floor")] }, { reasoning: Effort.Minimal });
+		expect(request.additionalModelRequestFields).toMatchObject({ output_config: { effort: "low" } });
+	});
+
+	it("honors a request-level maxTokens instead of the catalog-wide model ceiling", () => {
+		const request = transformKiroRequest(
+			model,
+			{ messages: [user("bounded")] },
+			{ reasoning: Effort.Medium, maxTokens: 1024 },
+		);
+		expect(request.additionalModelRequestFields).toEqual({
+			thinking: { type: "adaptive", display: "summarized" },
+			output_config: { effort: "medium" },
+			max_tokens: 1024,
+		});
+	});
+
+	it("keeps the effective output limit valid for the selected model", () => {
+		// A caller asking above the model ceiling is clamped back to it, so the
+		// adaptive-thinking request can never exceed what the model accepts.
+		const request = transformKiroRequest(
+			model,
+			{ messages: [user("over")] },
+			{ reasoning: Effort.Medium, maxTokens: 999_999 },
+		);
+		expect(request.additionalModelRequestFields).toMatchObject({ max_tokens: 64_000 });
 	});
 
 	it("preserves complete tool-result content without an unproven provider cap", () => {
@@ -765,5 +828,209 @@ describe("Kiro native stream", () => {
 		expect(waits).toBe(0);
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe("validationException: <sanitized-provider-message>");
+	});
+});
+
+/**
+ * Kiro streams warm up and idle far longer than OMP's shared defaults (100s
+ * first event / 120s idle), so the leaf widens both floors through the shared
+ * timeout helpers. These tests pin the Kiro-specific values and prove an
+ * explicit caller override still wins.
+ */
+describe("Kiro stream timeout defaults", () => {
+	/** Fake timers are synchronous here, so promise continuations need draining by hand. */
+	async function flushMicrotasks(ticks = 100): Promise<void> {
+		for (let index = 0; index < ticks; index++) await Promise.resolve();
+	}
+
+	function stallingResponse(): { response: Response; push: (bytes: Uint8Array) => void } {
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		const body = new ReadableStream<Uint8Array>({
+			start(streamController) {
+				controller = streamController;
+			},
+		});
+		return {
+			response: new Response(body, {
+				status: 200,
+				headers: {
+					"content-type": "application/vnd.amazon.eventstream",
+					"x-amzn-requestid": "idle-request",
+				},
+			}),
+			push: bytes => controller.enqueue(bytes),
+		};
+	}
+
+	it("waits 90s for the first event by default", async () => {
+		vi.useFakeTimers();
+		const fetchStarted = Promise.withResolvers<void>();
+		let transportSignal: AbortSignal | null | undefined;
+		const resultPromise = streamKiro(
+			model,
+			{ messages: [user("first event")] },
+			{
+				apiKey: "ksk_test",
+				fetch: async (_input, init) => {
+					transportSignal = init?.signal;
+					fetchStarted.resolve();
+					const { promise, reject } = Promise.withResolvers<Response>();
+					transportSignal?.addEventListener("abort", () => reject(transportSignal?.reason), { once: true });
+					return promise;
+				},
+			},
+		).result();
+		await fetchStarted.promise;
+		vi.advanceTimersByTime(89_999);
+		await flushMicrotasks();
+		expect(transportSignal?.aborted).toBe(false);
+		vi.advanceTimersByTime(1);
+		const result = await resultPromise;
+		expect(transportSignal?.reason).toHaveProperty("name", "TimeoutError");
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("timed out");
+	});
+
+	it("waits 300s between events by default, outliving the shared idle floor", async () => {
+		vi.useFakeTimers();
+		const { response, push } = stallingResponse();
+		const resultPromise = streamKiro(
+			model,
+			{ messages: [user("idle")] },
+			{ apiKey: "ksk_test", fetch: async () => response },
+		).result();
+		let settled = false;
+		void resultPromise.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		await flushMicrotasks();
+		push(frame("assistantResponseEvent", { content: "hello" }));
+		await flushMicrotasks();
+		// Past OMP's shared 120s idle default: only Kiro's wider floor keeps this alive.
+		vi.advanceTimersByTime(120_001);
+		await flushMicrotasks();
+		expect(settled).toBe(false);
+		vi.advanceTimersByTime(300_000);
+		await flushMicrotasks();
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("next event");
+	});
+
+	it("lets an explicit idle override win over the Kiro default", async () => {
+		vi.useFakeTimers();
+		const { response, push } = stallingResponse();
+		const resultPromise = streamKiro(
+			model,
+			{ messages: [user("idle override")] },
+			{ apiKey: "ksk_test", fetch: async () => response, streamIdleTimeoutMs: 25 },
+		).result();
+		await flushMicrotasks();
+		push(frame("assistantResponseEvent", { content: "hello" }));
+		await flushMicrotasks();
+		vi.advanceTimersByTime(25);
+		await flushMicrotasks();
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("next event");
+	});
+
+	it("lets combined overrides win over both Kiro defaults", async () => {
+		vi.useFakeTimers();
+		const fetchStarted = Promise.withResolvers<void>();
+		let transportSignal: AbortSignal | null | undefined;
+		const resultPromise = streamKiro(
+			model,
+			{ messages: [user("combined")] },
+			{
+				apiKey: "ksk_test",
+				streamFirstEventTimeoutMs: 10,
+				streamIdleTimeoutMs: 10,
+				fetch: async (_input, init) => {
+					transportSignal = init?.signal;
+					fetchStarted.resolve();
+					const { promise, reject } = Promise.withResolvers<Response>();
+					transportSignal?.addEventListener("abort", () => reject(transportSignal?.reason), { once: true });
+					return promise;
+				},
+			},
+		).result();
+		await fetchStarted.promise;
+		vi.advanceTimersByTime(10);
+		const result = await resultPromise;
+		expect(transportSignal?.reason).toHaveProperty("name", "TimeoutError");
+		expect(result.stopReason).toBe("error");
+	});
+
+	it("clears the pre-response watchdog so a healthy stream survives the first-event deadline", async () => {
+		vi.useFakeTimers();
+		const resultPromise = streamKiro(
+			model,
+			{ messages: [user("healthy")] },
+			{ apiKey: "ksk_test", fetch: async () => eventResponse(normalFrames()) },
+		).result();
+		await flushMicrotasks();
+		// The armed transport deadline must not survive a completed response.
+		vi.advanceTimersByTime(600_000);
+		await flushMicrotasks();
+		const result = await resultPromise;
+		expect(result.stopReason).not.toBe("error");
+		expect(result.errorMessage).toBeUndefined();
+	});
+});
+
+/**
+ * The default pre-output recovery delay, exercised without the injected
+ * `providerRetryWait` hook that every other test substitutes.
+ */
+describe("Kiro default recovery wait", () => {
+	it("waits and retries once after a pre-output capacity failure", async () => {
+		let calls = 0;
+		const { result } = await drain(
+			streamKiro(
+				model,
+				{ messages: [user("capacity")] },
+				{
+					apiKey: "ksk_test",
+					fetch: async () => {
+						calls++;
+						if (calls === 1) {
+							return new Response(JSON.stringify({ __type: "INSUFFICIENT_MODEL_CAPACITY" }), { status: 503 });
+						}
+						return eventResponse(normalFrames());
+					},
+				},
+			),
+		);
+		expect(calls).toBe(2);
+		expect(result.stopReason).not.toBe("error");
+	});
+
+	it("stays cancellable while waiting", async () => {
+		const controller = new AbortController();
+		let calls = 0;
+		const { result } = await drain(
+			streamKiro(
+				model,
+				{ messages: [user("cancel wait")] },
+				{
+					apiKey: "ksk_test",
+					signal: controller.signal,
+					fetch: async () => {
+						calls++;
+						// Abort while the recovery delay is pending, not before it starts.
+						setTimeout(() => controller.abort(new Error("cancelled")), 10);
+						return new Response(JSON.stringify({ __type: "INSUFFICIENT_MODEL_CAPACITY" }), { status: 503 });
+					},
+				},
+			),
+		);
+		expect(calls).toBe(1);
+		expect(result.stopReason).toBe("aborted");
 	});
 });

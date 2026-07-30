@@ -1,6 +1,7 @@
 import type {
 	AssistantMessage,
 	Context,
+	Effort,
 	ImageContent,
 	Message,
 	Model,
@@ -167,9 +168,11 @@ export function transformKiroRequest(
 	model: Model,
 	context: Context,
 	options: {
-		reasoning?: Parameters<typeof buildKiroModelRequestFields>[1];
+		reasoning?: Effort;
 		disableReasoning?: boolean;
 		hideThinkingSummary?: boolean;
+		/** Request-level output cap; bounded by the model ceiling before serialization. */
+		maxTokens?: number;
 	} = {},
 ): KiroRequest {
 	const normalizer = createKiroToolUseIdNormalizer();
@@ -254,7 +257,7 @@ export function transformKiroRequest(
 	if (toolSpecs.length > 0) currentContext.tools = toolSpecs;
 	const requestFields = options.disableReasoning
 		? undefined
-		: buildKiroModelRequestFields(model, options.reasoning, options.hideThinkingSummary);
+		: buildKiroModelRequestFields(model, options.reasoning, options.hideThinkingSummary, options.maxTokens);
 	return {
 		agentMode: "vibe",
 		conversationState: {

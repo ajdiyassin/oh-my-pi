@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import * as path from "node:path";
-import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { assertNotNativeKiroRegistration, registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import type {
 	Api,
 	Context,
@@ -2577,6 +2577,12 @@ export class ModelRegistry {
 	 * If provider has oauth: registers OAuth provider for /login support.
 	 */
 	registerProvider(providerName: string, config: ProviderConfigInput, sourceId?: string): void {
+		// Kiro is native. Reserve the provider name itself, not just the custom-API
+		// and OAuth seams below: an extension registering models/transport without
+		// `streamSimple` or `oauth` would otherwise reach `registerProvider` and
+		// replace the native Kiro model set.
+		assertNotNativeKiroRegistration(providerName);
+
 		if (config.streamSimple && !config.api) {
 			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
 		}

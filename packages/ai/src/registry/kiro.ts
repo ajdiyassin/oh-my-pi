@@ -1,5 +1,4 @@
 import * as AIError from "../error";
-import { loginKiroBrowser, loginKiroDevice, refreshKiroToken, validateKiroApiKey } from "./oauth/kiro";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
 
@@ -14,22 +13,29 @@ export const kiroProvider = {
 			message: "Choose Kiro authentication: 1) Browser OAuth 2) Device code 3) API key",
 			placeholder: "1",
 		});
-		if (method.trim() === "3") {
+		const choice = method.trim();
+		if (choice === "3") {
 			const apiKey = await callbacks.onPrompt({ message: "Paste your Kiro API key", placeholder: "ksk_..." });
+			// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
+			const { validateKiroApiKey } = await import("./oauth/kiro");
 			return validateKiroApiKey(apiKey, {
 				fetch: callbacks.fetch,
 				signal: callbacks.signal,
 				apiRegion: Bun.env.KIRO_API_REGION,
 			});
 		}
-		if (method.trim() === "1") {
+		if (choice === "1") {
+			// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
+			const { loginKiroBrowser } = await import("./oauth/kiro");
 			return loginKiroBrowser(callbacks, {
 				issuerUrl: "https://view.awsapps.com/start",
 				preferredPort: 0,
 				scopes: KIRO_SCOPES,
 			});
 		}
-		if (method.trim() === "2") {
+		if (choice === "2") {
+			// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
+			const { loginKiroDevice } = await import("./oauth/kiro");
 			return loginKiroDevice(callbacks, { scopes: KIRO_SCOPES });
 		}
 		throw new AIError.OAuthError("Invalid Kiro authentication selection", {
@@ -37,7 +43,11 @@ export const kiroProvider = {
 			provider: "kiro",
 		});
 	},
-	refreshToken: refreshKiroToken,
+	refreshToken: async (credentials: OAuthCredentials) => {
+		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
+		const { refreshKiroToken } = await import("./oauth/kiro");
+		return refreshKiroToken(credentials);
+	},
 	getApiKey: (credentials: OAuthCredentials) => {
 		if (!credentials.orgId) {
 			throw new AIError.OAuthError("Kiro OAuth credentials are missing the selected profile", {

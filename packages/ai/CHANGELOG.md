@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the unreachable native Kiro authentication leaf with API-key route validation, browser/device OAuth, profile selection, refresh-state persistence, and broker-safe credential redaction for the later activation phase ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added privacy-safe Kiro Phase 0 protocol fixtures and independent Amazon EventStream replay coverage for native provider development ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added the unreachable native Kiro runtime leaf with capture-derived request transforms, adaptive reasoning, decoded EventStream normalization, per-ID tool assembly, typed errors, isolated pre-output recovery, provider hooks, response timing, and usage metrics ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added native Kiro activation: `kiro-api` is a built-in API with lazy provider registration and exhaustive stream dispatch, and `kiro/<model-id>` is natively selectable with dynamic `ListAvailableModels` discovery ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Added profile-scoped Kiro quota usage (`GetUsageLimits` on `KiroControlPlaneBearerService`), normalizing each credit/request bucket into `UsageReport`/`UsageLimit` with reset time and response-stated overage/bonus notes. OAuth-only; API-key credentials report no usage, and neither the full profile ARN nor upstream account identifiers reach reports ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
+### Changed
+
+- Hardened the shared Amazon EventStream decoder with bounded frames, headers, and retained buffers plus strict malformed-header handling for Kiro and Bedrock streams ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Kiro streams widen the shared stream-timeout floors to a 90s first-event and 300s idle budget, matching how long the runtime can spend on prompt processing and silent reasoning. Both values are supplied as per-provider fallbacks to the shared helpers, so `PI_STREAM_*_TIMEOUT_MS` and explicit per-call overrides still win ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Kiro's provider definition now loads its OAuth implementation through dynamic-import thunks instead of eagerly, keeping the heavy login/refresh graph out of the eager provider registry like every other OAuth provider ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
+### Fixed
+
+- Fixed native Kiro streams ignoring the terminal `stopReason`: the live runtime reports it on `metadataEvent` rather than `assistantResponseEvent`, so every stream previously fell back to `stop` and `MAX_TOKENS` never mapped to `length`. The live `meteringEvent` billing frame (`{ unit, unitPlural, usage }`, fractional credits) is now recognized instead of dropped as unknown, and never contributes to token usage ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed the legacy `omp-provider-kiro` extension being able to shadow native Kiro: the conflict guard now covers OAuth provider registration in addition to custom-API registration, since extensions register in arbitrary order and both OAuth refresh paths consult the custom-provider map before the built-in registry ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed Kiro usage reports leaking the full profile ARN: the provider returned no `metadata`, so `AuthStorage` backfilled `metadata.orgId` from the credential's `orgId` — the complete ARN including the AWS account id — which `omp usage` then printed in the account header and emitted in `--json`, defeating the deliberate truncation applied to each limit's scope. The report now stamps the same trailing profile segment, and the full ARN never leaves the fetch function ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed native Kiro authentication to dynamically register AWS OIDC clients only after the real loopback callback URI is known, exchange browser and device tokens with the captured JSON contracts and registered client secret, discover the supported login region without prompting for infrastructure details, and remove unusable desktop app-ID flows from the CLI ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed Kiro reasoning requests escalating an unsupported thinking effort to the next *higher* tier: effort selection now routes through the shared `clampThinkingLevelForModel` contract, so a `medium` request against a `[low, high]` catalog resolves to `low` instead of silently increasing reasoning usage and cost ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed Kiro ignoring a request-level `maxTokens`: adaptive-thinking requests always serialized the catalog-wide model ceiling, so `{ maxTokens: 1024 }` could still request the model maximum. The effective output limit is now derived from the request and bounded by the model ceiling, and the adaptive-thinking budget uses that same effective limit ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+- Fixed Kiro's pre-output recovery delay using a Node timer scheduler instead of `Bun.sleep`, while keeping the wait cancellable through the caller's abort signal ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
+
 ## [17.2.0] - 2026-07-30
 
 ### Added
@@ -137,31 +161,6 @@
 - Fixed Cursor exec-channel MCP calls such as `web_search` omitting `toolCall` blocks when no interaction block arrives, which rendered their tool cards below the final assistant answer or dropped them on transcript replay. ([#6501](https://github.com/can1357/oh-my-pi/issues/6501))
 - Fixed Claude scoped weekly limits (e.g. `Claude 7 Day (Fable)`) with `is_active: false` being dropped by the `/usage` parser, rendering as `not reported` in `omp usage` despite carrying real utilization. Live payloads mark only the currently binding limit active — an account pinned at a 100% Fable cap reports its 77% shared weekly row as inactive too — so `is_active` signals severity ranking, not bucket existence, and is now ignored. Exhaustion gating is unchanged: tier rows still hard-block only at confirmed 100% with a future reset.
 - Fixed a TDZ crash (`Cannot access 'claudeCodeVersion' before initialization`) when `providers/anthropic` was the first module loaded: `providers/anthropic` → `stream` → `registry` → `registry/oauth/anthropic` circled back into the still-initializing provider module. The Claude Code fingerprint constants now live in the leaf module `providers/claude-code-fingerprint` (star re-exported from `providers/anthropic`, so import paths are unchanged).
-
-## [17.1.3] - 2026-07-24
-
-### Fixed
-
-- Fixed Cursor sessions exposing `ast_edit` (and other staged-preview `xd://` devices) without a reachable resolver: the built-in `write` tool — which carries the `xd://resolve` / `xd://reject` transport that finalizes a staged preview — was filtered out of Cursor's forwarded catalog, so previews could never be resolved and the session aborted after three forced `write` turns. `write` is now re-included in the forwarded catalog whenever pi-agent devices are advertised ([#6536](https://github.com/can1357/oh-my-pi/issues/6536)).
-- Fixed OpenAI Responses and chat-completions streams honoring per-model first-event watchdog policy, allowing local llama.cpp-style backends to process arbitrarily large prompts without a premature client cancellation ([#6524](https://github.com/can1357/oh-my-pi/issues/6524)).
-### Added
-
-- Added the unreachable native Kiro authentication leaf with API-key route validation, browser/device OAuth, profile selection, refresh-state persistence, and broker-safe credential redaction for the later activation phase ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Added privacy-safe Kiro Phase 0 protocol fixtures and independent Amazon EventStream replay coverage for native provider development ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Added the unreachable native Kiro runtime leaf with capture-derived request transforms, adaptive reasoning, decoded EventStream normalization, per-ID tool assembly, typed errors, isolated pre-output recovery, provider hooks, response timing, and usage metrics ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Added native Kiro activation: `kiro-api` is a built-in API with lazy provider registration and exhaustive stream dispatch, and `kiro/<model-id>` is natively selectable with dynamic `ListAvailableModels` discovery ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Added profile-scoped Kiro quota usage (`GetUsageLimits` on `KiroControlPlaneBearerService`), normalizing each credit/request bucket into `UsageReport`/`UsageLimit` with reset time and response-stated overage/bonus notes. OAuth-only; API-key credentials report no usage, and neither the full profile ARN nor upstream account identifiers reach reports ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-
-### Changed
-
-- Hardened the shared Amazon EventStream decoder with bounded frames, headers, and retained buffers plus strict malformed-header handling for Kiro and Bedrock streams ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-
-### Fixed
-
-- Fixed native Kiro streams ignoring the terminal `stopReason`: the live runtime reports it on `metadataEvent` rather than `assistantResponseEvent`, so every stream previously fell back to `stop` and `MAX_TOKENS` never mapped to `length`. The live `meteringEvent` billing frame (`{ unit, unitPlural, usage }`, fractional credits) is now recognized instead of dropped as unknown, and never contributes to token usage ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Fixed the legacy `omp-provider-kiro` extension being able to shadow native Kiro: the conflict guard now covers OAuth provider registration in addition to custom-API registration, since extensions register in arbitrary order and both OAuth refresh paths consult the custom-provider map before the built-in registry ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Fixed Kiro usage reports leaking the full profile ARN: the provider returned no `metadata`, so `AuthStorage` backfilled `metadata.orgId` from the credential's `orgId` — the complete ARN including the AWS account id — which `omp usage` then printed in the account header and emitted in `--json`, defeating the deliberate truncation applied to each limit's scope. The report now stamps the same trailing profile segment, and the full ARN never leaves the fetch function ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
-- Fixed native Kiro authentication to dynamically register AWS OIDC clients only after the real loopback callback URI is known, exchange browser and device tokens with the captured JSON contracts and registered client secret, discover the supported login region without prompting for infrastructure details, and remove unusable desktop app-ID flows from the CLI ([#4](https://github.com/ajdiyassin/oh-my-pi/issues/4)).
 
 ## [17.1.3] - 2026-07-24
 
