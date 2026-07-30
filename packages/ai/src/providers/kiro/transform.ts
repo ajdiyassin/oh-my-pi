@@ -1,3 +1,4 @@
+import { prompt } from "@oh-my-pi/pi-utils";
 import type {
 	AssistantMessage,
 	Context,
@@ -12,6 +13,12 @@ import type {
 import { toolWireSchema } from "../../utils/schema/wire";
 import { buildKiroModelRequestFields } from "./adaptive-thinking";
 import { createKiroToolUseIdNormalizer } from "./id-normalizer";
+import assistantHistoryPrompt from "./prompts/assistant-history.md" with { type: "text" };
+import continuationPrompt from "./prompts/continuation.md" with { type: "text" };
+import defaultToolDescriptionPrompt from "./prompts/default-tool-description.md" with { type: "text" };
+import historicalToolDescriptionPrompt from "./prompts/historical-tool-description.md" with { type: "text" };
+import joinedContentPrompt from "./prompts/joined-content.md" with { type: "text" };
+import toolResultsPrompt from "./prompts/tool-results.md" with { type: "text" };
 import type {
 	KiroAssistantResponseMessage,
 	KiroHistoryEntry,
@@ -22,6 +29,14 @@ import type {
 	KiroToolUse,
 	KiroUserInputMessage,
 } from "./types";
+
+const CONTINUATION_PROMPT = prompt.render(continuationPrompt);
+const HISTORICAL_TOOL_DESCRIPTION = prompt.render(historicalToolDescriptionPrompt);
+const TOOL_RESULTS_PROMPT = prompt.render(toolResultsPrompt);
+
+function joinPromptContent(prefix: string, content: string): string {
+	return prompt.render(joinedContentPrompt, { prefix, content });
+}
 
 function textContent(message: Message): string {
 	if (typeof message.content === "string") return message.content.toWellFormed();
@@ -76,17 +91,17 @@ function assistantMessage(
 	message: AssistantMessage,
 	normalizeId: (id: string) => string,
 ): KiroAssistantResponseMessage | undefined {
-	let thinking = "";
+	const thinking: string[] = [];
 	let text = "";
 	const toolUses: KiroToolUse[] = [];
 	for (const part of message.content) {
 		if (part.type === "text") text += part.text;
-		else if (part.type === "thinking") thinking += `<thinking>${part.thinking}</thinking>\n\n`;
+		else if (part.type === "thinking") thinking.push(part.thinking);
 		else if (part.type === "toolCall") {
 			toolUses.push({ name: part.name, toolUseId: normalizeId(part.id), input: parseToolArguments(part) });
 		}
 	}
-	const content = `${thinking}${text}`;
+	const content = prompt.render(assistantHistoryPrompt, { thinking, text });
 	if (!content && toolUses.length === 0) return undefined;
 	return { content: content.toWellFormed(), ...(toolUses.length > 0 ? { toolUses } : {}) };
 }
@@ -110,7 +125,7 @@ function toolsToKiro(tools: readonly Tool[]): KiroToolSpec[] {
 	return tools.map(tool => ({
 		toolSpecification: {
 			name: tool.name,
-			description: tool.description.trim() || `Use the ${tool.name} tool.`,
+			description: tool.description.trim() || prompt.render(defaultToolDescriptionPrompt, { toolName: tool.name }),
 			inputSchema: { json: toolWireSchema(tool) },
 		},
 	}));
@@ -131,7 +146,7 @@ function appendHistoricalToolPlaceholders(tools: KiroToolSpec[], history: readon
 		tools.push({
 			toolSpecification: {
 				name,
-				description: "Tool used in conversation history.",
+				description: HISTORICAL_TOOL_DESCRIPTION,
 				inputSchema: { json: { type: "object", properties: {} } },
 			},
 		});
@@ -194,13 +209,14 @@ export function transformKiroRequest(
 		if (message.role === "user" || message.role === "developer") {
 			let content = textContent(message);
 			if (systemPending) {
-				content = `${systemPending}\n\n${content}`;
+				content = joinPromptContent(systemPending, content);
 				systemPending = "";
 			}
 			const images = imageContent(message);
 			const previous = history.at(-1)?.userInputMessage;
-			if (previous && images.length === 0 && !previous.images?.length) previous.content += `\n\n${content}`;
-			else {
+			if (previous && images.length === 0 && !previous.images?.length) {
+				previous.content = joinPromptContent(previous.content, content);
+			} else {
 				history.push({
 					userInputMessage: {
 						...userMessage(content, model.requestModelId ?? model.id),
@@ -222,7 +238,7 @@ export function transformKiroRequest(
 		}
 		history.push({
 			userInputMessage: {
-				...userMessage("Tool results provided.", model.requestModelId ?? model.id),
+				...userMessage(TOOL_RESULTS_PROMPT, model.requestModelId ?? model.id),
 				userInputMessageContext: { toolResults: results },
 			},
 		});
@@ -238,17 +254,17 @@ export function transformKiroRequest(
 		for (const message of currentMessages.slice(1)) {
 			if (message.role === "toolResult") currentResults.push(toolResult(message, id => normalizer.normalize(id)));
 		}
-		currentContent = currentResults.length > 0 ? "Tool results provided." : "Please proceed with the task.";
+		currentContent = currentResults.length > 0 ? TOOL_RESULTS_PROMPT : CONTINUATION_PROMPT;
 	} else if (first?.role === "toolResult") {
 		for (const message of currentMessages) {
 			if (message.role === "toolResult") currentResults.push(toolResult(message, id => normalizer.normalize(id)));
 		}
-		currentContent = "Tool results provided.";
+		currentContent = TOOL_RESULTS_PROMPT;
 	} else if (first) {
 		currentContent = textContent(first);
 		currentImages = imageContent(first);
 	}
-	if (systemPending) currentContent = `${systemPending}${currentContent ? `\n\n${currentContent}` : ""}`;
+	if (systemPending) currentContent = joinPromptContent(systemPending, currentContent);
 
 	const toolSpecs = toolsToKiro(context.tools ?? []);
 	appendHistoricalToolPlaceholders(toolSpecs, history);
