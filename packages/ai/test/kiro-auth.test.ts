@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { getOAuthApiKey } from "@oh-my-pi/pi-ai/registry/oauth";
 import {
 	loginKiroBrowser,
 	loginKiroDevice,
@@ -305,5 +306,21 @@ describe("Kiro authentication", () => {
 				},
 			),
 		).rejects.toThrow("exceeded size limit");
+	});
+});
+
+describe("Kiro OAuth API-key projection", () => {
+	it("serializes the selected profile for the native runtime transport", async () => {
+		const result = await getOAuthApiKey("kiro", {
+			kiro: {
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+				orgId: PROFILE_ONE,
+			},
+		});
+
+		expect(result).not.toBeNull();
+		expect(JSON.parse(result!.apiKey)).toEqual({ token: "access-token", profileArn: PROFILE_ONE });
 	});
 });

@@ -1,6 +1,43 @@
+import type { KiroDiscoveryCredential } from "../discovery/kiro";
+
 export interface ModelCacheProviderIdOptions {
 	apiKey?: string;
 	baseUrl?: string;
+}
+
+/** Parse the structured Kiro credential projection used by discovery and transport. */
+export function parseKiroDiscoveryCredential(value: string): KiroDiscoveryCredential {
+	const trimmed = value.trim();
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+			const record = parsed as Record<string, unknown>;
+			if (typeof record.token === "string" && record.token.length > 0) {
+				if (typeof record.profileArn === "string" && record.profileArn.length > 0) {
+					return { type: "oauth", token: record.token, profileArn: record.profileArn };
+				}
+				return {
+					type: "api_key",
+					token: record.token,
+					...(typeof record.apiEndpoint === "string" ? { apiEndpoint: record.apiEndpoint } : {}),
+				};
+			}
+		}
+	} catch {
+		// Raw KIRO_API_KEY values are not JSON-wrapped.
+	}
+	return { type: "api_key", token: trimmed };
+}
+
+/** Resolve the privacy-safe cache namespace for one Kiro discovery credential. */
+export function resolveKiroModelCacheProviderId(apiKey?: string): string {
+	if (!apiKey) return "kiro";
+	const credential = parseKiroDiscoveryCredential(apiKey);
+	const identity =
+		credential.type === "oauth"
+			? `oauth\u0000${credential.profileArn}`
+			: `api_key\u0000${credential.token}\u0000${credential.apiEndpoint ?? ""}`;
+	return `kiro:models-v1:${Bun.hash(identity).toString(36)}`;
 }
 
 export function getDefaultModelDiscoveryBaseUrl(providerId: string): string | undefined {
@@ -38,6 +75,8 @@ export function resolveOllamaModelCacheProviderId(providerId: string, baseUrl?: 
 /** Resolve the cache namespace used by a provider's model-manager options without constructing those options. */
 export function resolveModelCacheProviderId(providerId: string, options: ModelCacheProviderIdOptions = {}): string {
 	switch (providerId) {
+		case "kiro":
+			return resolveKiroModelCacheProviderId(options.apiKey);
 		case "ollama":
 			return resolveOllamaModelCacheProviderId(providerId, options.baseUrl);
 		case "cursor":

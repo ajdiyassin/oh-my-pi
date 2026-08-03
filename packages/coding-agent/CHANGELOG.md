@@ -76,6 +76,10 @@
 - Fixed install.sh falsely reporting success on musl-based systems (such as Alpine Linux) when the binary fails to start; the installer now smoke-tests the binary, exits non-zero on failure, and provides remediation steps.
 - Fixed Codex config.toml discovery incorrectly importing MCP servers that are configured with enabled = false.
 - Fixed bash.patterns allow rules rejecting valid commands when quoted arguments contained shell metacharacters (such as Cargo benchmark regex filters).
+### Fixed
+
+- Fixed Kiro model discovery cache restoration to resolve the selected credential before reading cached models, isolating catalogs by profile or API endpoint and rejecting unsafe bare-provider rows.
+- Prevented legacy extensions from mutating provider registrations before a native Kiro shadow-registration error is reported.
 
 ## [17.2.6] - 2026-08-03
 

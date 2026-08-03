@@ -21,6 +21,10 @@ describe("custom API registry", () => {
 		);
 	});
 
+	test("rejects registrations that collide with native Kiro identifiers", () => {
+		expect(() => registerCustomApi("kiro-api", streamSimple)).toThrow("Kiro is built into this OMP version.");
+		expect(() => registerCustomApi("kiro", streamSimple)).toThrow("Kiro is built into this OMP version.");
+	});
 	test("unregisterCustomApis removes only matching source registrations", () => {
 		registerCustomApi("custom-a", streamSimple, "ext-a");
 		registerCustomApi("custom-b", streamSimple, "ext-b");

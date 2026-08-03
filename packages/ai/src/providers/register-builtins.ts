@@ -1,14 +1,9 @@
 /**
  * Lazy provider module loading.
  *
- * Each provider module is loaded only when its stream function is first called.
- * This avoids eagerly importing heavy SDK dependencies (e.g., openai) at
- * startup. The loaded module promise is cached so subsequent calls
- * reuse the same import.
- *
- * NOTE: stream.ts currently imports providers directly, so this file is not yet
- * wired into the main streaming path. It provides the infrastructure for lazy
- * loading that can be integrated when stream.ts is refactored.
+ * Most provider modules are loaded only when their stream function is first
+ * called. Kiro is statically linked but still uses the same lazy-stream seam so
+ * its provider-specific timeout handling remains consistent.
  */
 
 import * as AIError from "../error";
@@ -38,6 +33,7 @@ import type { DevinOptions } from "./devin";
 import type { GoogleOptions } from "./google";
 import type { GoogleGeminiCliOptions } from "./google-gemini-cli";
 import type { GoogleVertexOptions } from "./google-vertex";
+import { streamKiro as streamKiroProvider } from "./kiro/index";
 import type { OllamaChatOptions } from "./ollama";
 import type { OpenAICodexResponsesOptions } from "./openai-codex-responses";
 import type { OpenAICompletionsOptions } from "./openai-completions";
@@ -390,6 +386,10 @@ function loadGoogleVertexProviderModule(): Promise<LazyProviderModule<"google-ve
 	return googleVertexProviderModulePromise;
 }
 
+function loadKiroProviderModule(): Promise<LazyProviderModule<"kiro-api">> {
+	return Promise.resolve({ stream: streamKiroProvider });
+}
+
 function loadOpenAICodexResponsesProviderModule(): Promise<LazyProviderModule<"openai-codex-responses">> {
 	openAICodexResponsesProviderModulePromise ||= import("./openai-codex-responses").then(module => {
 		const provider = module as OpenAICodexResponsesProviderModule;
@@ -471,6 +471,7 @@ export const streamGoogleGeminiCli = createLazyStream(
 	GOOGLE_GEMINI_CLI_LAZY_STREAM_LIMITS,
 );
 export const streamGoogleVertex = createLazyStream(loadGoogleVertexProviderModule);
+export const streamKiro = createLazyStream(loadKiroProviderModule, PROVIDER_HANDLED_STREAM_TIMEOUTS);
 export const streamOpenAICodexResponses = createLazyStream(
 	loadOpenAICodexResponsesProviderModule,
 	PROVIDER_HANDLED_STREAM_TIMEOUTS,

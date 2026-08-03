@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
-import { DEFAULT_MODEL_PER_PROVIDER, PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models";
+import {
+	DEFAULT_MODEL_PER_PROVIDER,
+	PROVIDER_DESCRIPTORS,
+	resolveKiroModelCacheProviderId,
+	resolveModelCacheProviderId,
+} from "@oh-my-pi/pi-catalog/provider-models";
 import { kiroModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/special";
 import type { FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
@@ -81,6 +86,34 @@ describe("Kiro provider discovery", () => {
 		expect(namespace).toMatch(/^kiro:models-v1:/);
 		expect(namespace).not.toContain(token);
 		expect(namespace).not.toContain(PROFILE_ARN);
+	});
+
+	test("keeps cache identity profile-scoped and agrees with the lightweight resolver", () => {
+		const oauthProfileA = JSON.stringify({ token: "rotated-access-a", profileArn: PROFILE_ARN });
+		const oauthProfileARotated = JSON.stringify({ token: "new-access-a", profileArn: PROFILE_ARN });
+		const oauthProfileB = JSON.stringify({
+			token: "rotated-access-b",
+			profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/other",
+		});
+		const apiKeyEndpointA = JSON.stringify({ token: "api-key-a", apiEndpoint: API_ENDPOINT });
+		const apiKeyEndpointB = JSON.stringify({
+			token: "api-key-a",
+			apiEndpoint: "https://management.eu-west-1.kiro.dev/",
+		});
+
+		expect(resolveKiroModelCacheProviderId(oauthProfileA)).toBe(
+			resolveKiroModelCacheProviderId(oauthProfileARotated),
+		);
+		expect(resolveKiroModelCacheProviderId(oauthProfileA)).not.toBe(resolveKiroModelCacheProviderId(oauthProfileB));
+		expect(resolveKiroModelCacheProviderId(apiKeyEndpointA)).not.toBe(
+			resolveKiroModelCacheProviderId(apiKeyEndpointB),
+		);
+		expect(resolveModelCacheProviderId("kiro", { apiKey: oauthProfileA })).toBe(
+			resolveKiroModelCacheProviderId(oauthProfileA),
+		);
+		expect(resolveModelCacheProviderId("kiro")).toBe("kiro");
+		expect(resolveKiroModelCacheProviderId(oauthProfileA)).not.toContain(PROFILE_ARN);
+		expect(resolveKiroModelCacheProviderId(oauthProfileA)).not.toContain("rotated-access-a");
 	});
 
 	test("prunes static fallback models after a successful live catalog refresh", async () => {

@@ -13,6 +13,9 @@
 ### Fixed
 
 - Fixed an issue where setting `thinking-level: off` failed to disable reasoning on direct DeepSeek V4 requests.
+### Added
+
+- Added credential-scoped Kiro model-cache namespaces for OAuth profiles and API keys, preventing authoritative catalogs from being reused across credentials or API endpoints.
 
 ## [17.2.6] - 2026-08-03
 
