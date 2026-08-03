@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { crc32, decodeEventStream, decodeMessage } from "@oh-my-pi/pi-ai/providers/aws-eventstream";
+import { EventStreamFrameError } from "@oh-my-pi/pi-ai/error/aws";
+import {
+	crc32,
+	decodeEventStream,
+	decodeMessage,
+	MAX_BUFFER_SIZE,
+	MAX_FRAME_SIZE,
+	MAX_HEADERS_SIZE,
+} from "@oh-my-pi/pi-ai/providers/aws-eventstream";
 
 // ---- Frame builder (mirrors @smithy/eventstream-codec but in-process so the
 // test owns the bytes). The decoder is the production code; we encode here for
@@ -24,6 +32,20 @@ function encodeStringHeader(name: string, value: string): Uint8Array {
 	return buf;
 }
 
+function sealFrame(headerBytes: Uint8Array, payload: Uint8Array): Uint8Array {
+	const headerLen = headerBytes.length;
+	const total = 4 + 4 + 4 + headerLen + payload.length + 4;
+	const out = new Uint8Array(total);
+	const view = new DataView(out.buffer);
+	view.setUint32(0, total, false);
+	view.setUint32(4, headerLen, false);
+	view.setUint32(8, crc32(out.subarray(0, 8)), false);
+	out.set(headerBytes, 12);
+	out.set(payload, 12 + headerLen);
+	view.setUint32(total - 4, crc32(out.subarray(0, total - 4)), false);
+	return out;
+}
+
 function encodeFrame(headers: Record<string, string>, payload: Uint8Array): Uint8Array {
 	const headerChunks: Uint8Array[] = [];
 	for (const name in headers) headerChunks.push(encodeStringHeader(name, headers[name]));
@@ -34,17 +56,16 @@ function encodeFrame(headers: Record<string, string>, payload: Uint8Array): Uint
 		headerBytes.set(c, off);
 		off += c.length;
 	}
-	const total = 4 + 4 + 4 + headerLen + payload.length + 4;
-	const out = new Uint8Array(total);
+	return sealFrame(headerBytes, payload);
+}
+
+/** Prelude only — used to claim lengths without buffering a full frame. */
+function encodePrelude(total: number, headersLen: number): Uint8Array {
+	const out = new Uint8Array(12);
 	const view = new DataView(out.buffer);
 	view.setUint32(0, total, false);
-	view.setUint32(4, headerLen, false);
-	const preludeCrc = crc32(out.subarray(0, 8));
-	view.setUint32(8, preludeCrc, false);
-	out.set(headerBytes, 12);
-	out.set(payload, 12 + headerLen);
-	const msgCrc = crc32(out.subarray(0, total - 4));
-	view.setUint32(total - 4, msgCrc, false);
+	view.setUint32(4, headersLen, false);
+	view.setUint32(8, crc32(out.subarray(0, 8)), false);
 	return out;
 }
 
@@ -66,6 +87,26 @@ async function collect(
 		out.push({ headers: msg.headers, text: new TextDecoder().decode(msg.payload) });
 	}
 	return out;
+}
+
+function expectFrameError(fn: () => unknown, pattern: RegExp): void {
+	expect(fn).toThrow(EventStreamFrameError);
+	try {
+		fn();
+	} catch (error) {
+		expect(String(error)).toMatch(pattern);
+	}
+}
+
+async function expectStreamError(stream: ReadableStream<Uint8Array>, pattern: RegExp): Promise<void> {
+	let thrown: unknown;
+	try {
+		await collect(stream);
+	} catch (error) {
+		thrown = error;
+	}
+	expect(thrown).toBeInstanceOf(EventStreamFrameError);
+	expect(String(thrown)).toMatch(pattern);
 }
 
 describe("aws-eventstream", () => {
@@ -155,5 +196,105 @@ describe("aws-eventstream", () => {
 		const frame = encodeFrame({ ":event-type": "x" }, new TextEncoder().encode("{}"));
 		frame[frame.length - 1] ^= 0xff;
 		expect(() => decodeMessage(frame)).toThrow(/message CRC/);
+	});
+
+	test("passes through unknown event names for higher-level normalization", async () => {
+		const frame = encodeFrame(
+			{ ":message-type": "event", ":event-type": "futureKiroEvent" },
+			new TextEncoder().encode('{"future":true}'),
+		);
+		const collected = await collect(streamFrom([frame]));
+		expect(collected).toEqual([
+			{ headers: { ":message-type": "event", ":event-type": "futureKiroEvent" }, text: '{"future":true}' },
+		]);
+	});
+
+	test("throws when header name length overruns the header block", () => {
+		const headers = Uint8Array.of(5, 0x61, 0x62);
+		const frame = sealFrame(headers, new Uint8Array(0));
+		expectFrameError(() => decodeMessage(frame), /header name/);
+	});
+
+	test("throws when string header value length overruns the header block", () => {
+		const headers = Uint8Array.of(1, 0x78, 7, 0, 10, 0x21);
+		const frame = sealFrame(headers, new Uint8Array(0));
+		expectFrameError(() => decodeMessage(frame), /header value/);
+	});
+
+	test("throws when headers length does not fit in the frame", () => {
+		const frame = encodeFrame({ ":event-type": "x" }, new Uint8Array(0));
+		const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+		view.setUint32(4, frame.length, false);
+		view.setUint32(8, crc32(frame.subarray(0, 8)), false);
+		view.setUint32(frame.length - 4, crc32(frame.subarray(0, frame.length - 4)), false);
+		expectFrameError(() => decodeMessage(frame), /headers length|header block/);
+	});
+
+	test("rejects oversized frames before buffering the body", async () => {
+		await expectStreamError(streamFrom([encodePrelude(MAX_FRAME_SIZE + 1, 0)]), /frame|total length|oversized/i);
+	});
+
+	test("rejects oversized header blocks before buffering the body", async () => {
+		const total = 16 + MAX_HEADERS_SIZE + 1;
+		await expectStreamError(streamFrom([encodePrelude(total, MAX_HEADERS_SIZE + 1)]), /headers length|header/i);
+	});
+
+	test("throws on truncated message at end of stream", async () => {
+		const frame = encodeFrame({ ":event-type": "x" }, new TextEncoder().encode("{}"));
+		const partial = frame.subarray(0, Math.max(4, frame.length - 3));
+		await expectStreamError(streamFrom([new Uint8Array(partial)]), /truncated/);
+	});
+
+	test("cancels the underlying reader when the consumer stops early", async () => {
+		let cancelled = false;
+		const frame = encodeFrame(
+			{ ":message-type": "event", ":event-type": "messageStart" },
+			new TextEncoder().encode("{}"),
+		);
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(frame);
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+
+		const iter = decodeEventStream(stream);
+		const first = await iter.next();
+		expect(first.done).toBe(false);
+		expect(first.value?.headers[":event-type"]).toBe("messageStart");
+		await iter.return?.(undefined);
+		expect(cancelled).toBe(true);
+	});
+
+	test("cancels a blocked reader when its abort signal fires", async () => {
+		const controller = new AbortController();
+		const readStarted = Promise.withResolvers<void>();
+		const readerCancelled = Promise.withResolvers<void>();
+		const stream = new ReadableStream<Uint8Array>(
+			{
+				pull() {
+					readStarted.resolve();
+				},
+				cancel() {
+					readerCancelled.resolve();
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+		const next = decodeEventStream(stream, controller.signal).next();
+		await readStarted.promise;
+		controller.abort(new Error("cancelled"));
+		await expect(next).rejects.toThrow("cancelled");
+		await readerCancelled.promise;
+	});
+
+	test("exports bounded frame, header, and retained-buffer limits", () => {
+		expect(MAX_FRAME_SIZE).toBe(24 * 1024 * 1024);
+		expect(MAX_HEADERS_SIZE).toBe(128 * 1024);
+		expect(MAX_BUFFER_SIZE).toBe(25 * 1024 * 1024);
+		expect(MAX_BUFFER_SIZE).toBeGreaterThan(MAX_FRAME_SIZE);
+		expect(MAX_HEADERS_SIZE).toBeLessThan(MAX_FRAME_SIZE);
 	});
 });
