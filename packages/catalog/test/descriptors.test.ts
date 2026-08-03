@@ -21,6 +21,15 @@ describe("catalog provider descriptors", () => {
 		expect(DEFAULT_MODEL_PER_PROVIDER).not.toHaveProperty("kagi");
 	});
 
+	test("Kiro is authoritative and explicit-only without a fabricated default", () => {
+		const kiro = PROVIDER_DESCRIPTORS.find(descriptor => descriptor.providerId === "kiro");
+		expect(kiro?.defaultModel).toBeUndefined();
+		expect(kiro?.requiresExplicitModelSelection).toBe(true);
+		expect(kiro?.dynamicModelsAuthoritative).toBe(true);
+		expect(kiro?.catalogDiscovery).toEqual({ label: "Kiro", envVars: ["KIRO_API_KEY"], oauthProvider: "kiro" });
+		expect(DEFAULT_MODEL_PER_PROVIDER).not.toHaveProperty("kiro");
+	});
+
 	test("anthropic descriptor opts into first-party catalog discovery", () => {
 		const anthropic = PROVIDER_DESCRIPTORS.find(descriptor => descriptor.providerId === "anthropic");
 		expect(anthropic).toBeDefined();
@@ -34,9 +43,13 @@ describe("catalog provider descriptors", () => {
 		expect(typeof options?.fetchDynamicModels).toBe("function");
 	});
 
-	test("every descriptor has a default model and a factory that preserves provider identity", () => {
+	test("descriptors preserve provider identity and mark explicit-only providers without defaults", () => {
 		for (const descriptor of PROVIDER_DESCRIPTORS) {
-			expect(descriptor.defaultModel).toBeTruthy();
+			if (descriptor.requiresExplicitModelSelection) {
+				expect(descriptor.defaultModel).toBeUndefined();
+			} else {
+				expect(descriptor.defaultModel).toBeTruthy();
+			}
 			expect(typeof descriptor.createModelManagerOptions).toBe("function");
 			expect(descriptor.createModelManagerOptions({ apiKey: "k" }).providerId).toBe(descriptor.providerId);
 		}

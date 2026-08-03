@@ -2,6 +2,7 @@ import { once } from "@oh-my-pi/pi-utils";
 import { type CodexModelDiscoveryResult, fetchCodexModels } from "../discovery/codex";
 import type { DevinModelDiscoveryOptions } from "../discovery/devin";
 import { buildGitLabDuoWorkflowFallbackModel, fetchGitLabDuoWorkflowModels } from "../discovery/gitlab-duo-workflow";
+import { fetchKiroModels, type KiroDiscoveryCredential } from "../discovery/kiro";
 import type { ModelManagerOptions } from "../model-manager";
 import type { FetchImpl, ModelSpec } from "../types";
 import { resolveModelCacheProviderId } from "./cache-provider-id";
@@ -202,6 +203,62 @@ export function devinModelManagerOptions(config: DevinModelManagerConfig = {}): 
 }
 
 const devinDiscovery = once(() => import("../discovery/devin"));
+
+// ---------------------------------------------------------------------------
+// Kiro
+// ---------------------------------------------------------------------------
+
+export interface KiroModelManagerConfig {
+	apiKey?: string;
+	fetch?: FetchImpl;
+}
+
+function parseKiroDiscoveryCredential(value: string): KiroDiscoveryCredential {
+	const trimmed = value.trim();
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+			const record = parsed as Record<string, unknown>;
+			if (typeof record.token === "string" && record.token.length > 0) {
+				if (typeof record.profileArn === "string" && record.profileArn.length > 0) {
+					return { type: "oauth", token: record.token, profileArn: record.profileArn };
+				}
+				return {
+					type: "api_key",
+					token: record.token,
+					...(typeof record.apiEndpoint === "string" ? { apiEndpoint: record.apiEndpoint } : {}),
+				};
+			}
+		}
+	} catch {
+		// Raw KIRO_API_KEY values are not JSON-wrapped.
+	}
+	return { type: "api_key", token: trimmed };
+}
+
+function kiroModelCacheProviderId(credential: KiroDiscoveryCredential): string {
+	const identity =
+		credential.type === "oauth"
+			? `oauth\u0000${credential.profileArn}`
+			: `api_key\u0000${credential.token}\u0000${credential.apiEndpoint ?? ""}`;
+	return `kiro:models-v1:${Bun.hash(identity).toString(36)}`;
+}
+
+export function kiroModelManagerOptions(config: KiroModelManagerConfig = {}): ModelManagerOptions<"kiro-api"> {
+	const credential = config.apiKey ? parseKiroDiscoveryCredential(config.apiKey) : undefined;
+	return {
+		providerId: "kiro",
+		staticModels: [],
+		dynamicModelsAuthoritative: true,
+		cacheProviderId: credential ? kiroModelCacheProviderId(credential) : "kiro",
+		...(credential
+			? {
+					fetchDynamicModels: async () => fetchKiroModels({ credential, fetch: config.fetch }),
+				}
+			: undefined),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Zai
 // ---------------------------------------------------------------------------

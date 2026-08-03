@@ -23,7 +23,7 @@ import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
+import { DEFAULT_MODEL_PER_PROVIDER, getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -51,6 +51,14 @@ function isKnownProvider(provider: string): provider is KnownProvider {
 	return provider in DEFAULT_MODEL_PER_PROVIDER;
 }
 
+function isAutomaticModelCandidate(model: Model<Api>): boolean {
+	return getCatalogProviderEntry(model.provider)?.requiresExplicitModelSelection !== true;
+}
+
+function firstAutomaticAvailableModel(availableModels: readonly Model<Api>[]): Model<Api> | undefined {
+	return availableModels.find(isAutomaticModelCandidate);
+}
+
 /**
  * Pick the first provider-default model in availability order.
  *
@@ -59,13 +67,14 @@ function isKnownProvider(provider: string): provider is KnownProvider {
  * without changing unrelated provider fallback precedence.
  */
 export function pickDefaultAvailableModel(availableModels: Model<Api>[]): Model<Api> | undefined {
-	const firstDefault = availableModels.find(
+	const automaticModels = availableModels.filter(isAutomaticModelCandidate);
+	const firstDefault = automaticModels.find(
 		model => isKnownProvider(model.provider) && DEFAULT_MODEL_PER_PROVIDER[model.provider] === model.id,
 	);
-	if (!firstDefault) return availableModels[0];
+	if (!firstDefault) return automaticModels[0];
 
 	const providerPriority = buildModelProviderPriorityRank();
-	const sharedDefaultMatches = availableModels.filter(
+	const sharedDefaultMatches = automaticModels.filter(
 		model =>
 			model.id === firstDefault.id &&
 			isKnownProvider(model.provider) &&
@@ -1324,7 +1333,7 @@ export function resolveModelFromSettings(options: {
 		const resolved = resolveModelFromString(expanded, availableModels, matchPreferences);
 		if (resolved) return resolved;
 	}
-	return sawConfiguredProviderQualifiedRole ? undefined : availableModels[0];
+	return sawConfiguredProviderQualifiedRole ? undefined : firstAutomaticAvailableModel(availableModels);
 }
 
 /**
@@ -2052,6 +2061,7 @@ export async function findSmolModel(
 ): Promise<Model<Api> | undefined> {
 	const availableModels = modelRegistry.getAvailable();
 	if (availableModels.length === 0) return undefined;
+	const automaticModels = availableModels.filter(isAutomaticModelCandidate);
 
 	// 1. Try saved model from settings
 	if (savedModel) {
@@ -2062,20 +2072,20 @@ export async function findSmolModel(
 	// 2. Try priority chain
 	for (const pattern of MODEL_PRIO.smol) {
 		// Try exact match with provider prefix
-		const providerMatch = availableModels.find(m => `${m.provider}/${m.id}`.toLowerCase() === pattern);
+		const providerMatch = automaticModels.find(m => `${m.provider}/${m.id}`.toLowerCase() === pattern);
 		if (providerMatch) return providerMatch;
 
 		// Try exact match first
-		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
+		const exactMatch = parseModelPattern(pattern, automaticModels, undefined).model;
 		if (exactMatch) return exactMatch;
 
 		// Try fuzzy match (substring)
-		const fuzzyMatch = availableModels.find(m => m.id.toLowerCase().includes(pattern));
+		const fuzzyMatch = automaticModels.find(m => m.id.toLowerCase().includes(pattern));
 		if (fuzzyMatch) return fuzzyMatch;
 	}
 
-	// 3. Fallback to first available (same as default)
-	return availableModels[0];
+	// 3. Fallback to first automatic model; explicit-only providers require a choice.
+	return automaticModels[0];
 }
 
 /**
@@ -2092,6 +2102,7 @@ export async function findSlowModel(
 ): Promise<Model<Api> | undefined> {
 	const availableModels = modelRegistry.getAvailable();
 	if (availableModels.length === 0) return undefined;
+	const automaticModels = availableModels.filter(isAutomaticModelCandidate);
 
 	// 1. Try saved model from settings
 	if (savedModel) {
@@ -2102,14 +2113,14 @@ export async function findSlowModel(
 	// 2. Try priority chain
 	for (const pattern of MODEL_PRIO.slow) {
 		// Try exact match first
-		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
+		const exactMatch = parseModelPattern(pattern, automaticModels, undefined).model;
 		if (exactMatch) return exactMatch;
 
 		// Try fuzzy match (substring)
-		const fuzzyMatch = availableModels.find(m => m.id.toLowerCase().includes(pattern.toLowerCase()));
+		const fuzzyMatch = automaticModels.find(m => m.id.toLowerCase().includes(pattern.toLowerCase()));
 		if (fuzzyMatch) return fuzzyMatch;
 	}
 
-	// 3. Fallback to first available (same as default)
-	return availableModels[0];
+	// 3. Fallback to first automatic model; explicit-only providers require a choice.
+	return automaticModels[0];
 }

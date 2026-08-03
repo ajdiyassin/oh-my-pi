@@ -63,6 +63,7 @@ import {
 	cursorModelManagerOptions,
 	devinModelManagerOptions,
 	gitLabDuoWorkflowModelManagerOptions,
+	kiroModelManagerOptions,
 	zaiModelManagerOptions,
 } from "./special";
 
@@ -251,6 +252,14 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "kimi-for-coding",
 		createModelManagerOptions: (config: ModelManagerConfig) => kimiCodeModelManagerOptions(config),
 		catalogDiscovery: { label: "Kimi Code", envVars: ["KIMI_API_KEY"] },
+	},
+	{
+		id: "kiro",
+		envVars: ["KIRO_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => kiroModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		requiresExplicitModelSelection: true,
+		catalogDiscovery: { label: "Kiro", oauthProvider: "kiro" },
 	},
 	{
 		id: "litellm",
@@ -564,6 +573,7 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = CATALOG_ENTRY
 		{
 			providerId: provider.id,
 			defaultModel: provider.defaultModel,
+			requiresExplicitModelSelection: provider.requiresExplicitModelSelection,
 			createModelManagerOptions: provider.createModelManagerOptions,
 			allowUnauthenticated: provider.allowUnauthenticated,
 			dynamicModelsAuthoritative: provider.dynamicModelsAuthoritative,
@@ -574,10 +584,12 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = CATALOG_ENTRY
 	];
 });
 
-/** Default model IDs for all known providers, derived from the catalog table. */
-export const DEFAULT_MODEL_PER_PROVIDER: Record<KnownProvider, string> = Object.fromEntries(
-	CATALOG_PROVIDERS.map(provider => [provider.id, provider.defaultModel] as [string, string]),
-) as Record<KnownProvider, string>;
+/** Default model IDs for providers that permit automatic model selection. */
+export const DEFAULT_MODEL_PER_PROVIDER: Partial<Record<KnownProvider, string>> = Object.fromEntries(
+	CATALOG_PROVIDERS.flatMap(provider =>
+		"defaultModel" in provider ? [[provider.id, provider.defaultModel] as [string, string]] : [],
+	),
+) as Partial<Record<KnownProvider, string>>;
 
 export function getCatalogProviderEntry(id: string): ProviderCatalogEntry | undefined {
 	return CATALOG_PROVIDERS.find(provider => provider.id === id);
