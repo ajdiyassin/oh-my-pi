@@ -103,6 +103,11 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"accountId?": "string",
 		"orgId?": "string",
 		"orgName?": "string",
+		"kiroClientId?": "string",
+		"kiroClientSecret?": "string",
+		"kiroClientSecretExpiresAt?": "number",
+		"kiroTokenEndpoint?": "string",
+		"kiroAuthMethod?": "'device' | 'browser'",
 		"authorizedAt?": "number",
 	});
 
@@ -119,6 +124,11 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"accountId?": "string",
 		"orgId?": "string",
 		"orgName?": "string",
+		"kiroClientId?": "string",
+		"kiroClientSecret?": "string",
+		"kiroClientSecretExpiresAt?": "number",
+		"kiroTokenEndpoint?": "string",
+		"kiroAuthMethod?": "'device' | 'browser'",
 		"authorizedAt?": "number",
 	});
 
@@ -126,6 +136,7 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"+": "reject",
 		type: "'api_key'",
 		key: type("string").atLeastLength(1),
+		"apiEndpoint?": "string",
 		"source?": "'login'",
 	});
 

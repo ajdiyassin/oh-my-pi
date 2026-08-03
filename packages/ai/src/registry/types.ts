@@ -11,7 +11,7 @@
  */
 
 import type { Api, FetchImpl, Model, SimpleStreamOptions, StreamOptions } from "../types";
-import type { OAuthCredentials, OAuthLoginCallbacks } from "./oauth/types";
+import type { CredentialPolicy, OAuthCredentials, OAuthLoginCallbacks, ProviderLoginResult } from "./oauth/types";
 
 /**
  * API-key environment fallback: either a single env var name (e.g.
@@ -52,8 +52,8 @@ export type ProviderModelDiscoveryPreparer = (config: ProviderModelDiscoveryConf
  * - `callbackPort` present ⇒ entry in the auth-broker `CALLBACK_PORTS` map.
  * - `pasteCodeFlow` ⇒ member of `PASTE_CODE_LOGIN_PROVIDERS`.
  *
- * Heavy OAuth flow modules MUST be reached through dynamic-import thunks in
- * `login`/`refreshToken` so they stay out of the eager startup graph.
+ * Provider flow modules are imported at module scope so the registry remains
+ * statically analyzable and startup behavior is deterministic.
  */
 export interface ProviderDefinition {
 	readonly id: string;
@@ -73,11 +73,13 @@ export interface ProviderDefinition {
 	/** Provider-owned authentication and endpoint setup for model discovery. */
 	readonly prepareModelDiscovery?: ProviderModelDiscoveryPreparer;
 	// --- interactive login (OAuthProviderInterface-compatible) ---
-	readonly login?: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials | string>;
+	readonly login?: (callbacks: OAuthLoginCallbacks) => Promise<ProviderLoginResult>;
 	readonly refreshToken?: (credentials: OAuthCredentials) => Promise<OAuthCredentials>;
 	readonly getApiKey?: (credentials: OAuthCredentials) => string;
 	/** Store OAuth credentials under a different provider id (e.g. `openai-codex-device` ⇒ `openai-codex`). */
 	readonly storeCredentialsAs?: string;
+	/** Whether a successful login appends to or replaces the provider's credential pool. Defaults to append. */
+	readonly credentialPolicy?: CredentialPolicy;
 	// --- coding-agent login UX ---
 	/** Auth-broker local callback-server port. Presence ⇒ entry in `CALLBACK_PORTS`. */
 	readonly callbackPort?: number;

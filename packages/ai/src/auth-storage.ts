@@ -22,6 +22,7 @@ import { isUsageLimitOutcome } from "./error/rate-limit";
 import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
 import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./registry/oauth";
 import type {
+	ApiKeyLoginCredentials,
 	OAuthAuthInfo,
 	OAuthController,
 	OAuthCredentials,
@@ -109,6 +110,7 @@ const ANTHROPIC_SESSION_STICKY_CACHE_WARM_MS = 60 * 60_000;
 export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
+	apiEndpoint?: string;
 	source?: "login";
 };
 
@@ -117,6 +119,15 @@ export type OAuthCredential = {
 } & OAuthCredentials;
 
 export type AuthCredential = ApiKeyCredential | OAuthCredential;
+
+function isApiKeyLoginResult(
+	result: string | OAuthCredentials | ApiKeyLoginCredentials,
+): result is string | ApiKeyLoginCredentials {
+	return (
+		typeof result === "string" ||
+		(typeof result === "object" && result !== null && "type" in result && result.type === "api_key")
+	);
+}
 
 export type AuthCredentialEntry = AuthCredential | AuthCredential[];
 
@@ -138,6 +149,32 @@ export interface CredentialOrigin {
 	/** Env var name when `kind === "env"` and a single named variable backs it. */
 	envVar?: string;
 }
+
+/**
+ * The selected credential and its non-secret routing metadata. The bearer is
+ * returned for provider transports that need it, while `origin` and
+ * `credentialId` let callers preserve the same precedence and account
+ * attribution as {@link AuthStorage.getApiKey}.
+ */
+export type ResolvedAuthCredential =
+	| {
+			type: "api_key";
+			token: string;
+			apiEndpoint?: string;
+			origin: CredentialOriginKind;
+			credentialId?: number;
+	  }
+	| {
+			type: "oauth";
+			token: string;
+			refreshable: boolean;
+			orgId?: string;
+			orgName?: string;
+			accountId?: string;
+			email?: string;
+			apiEndpoint?: string;
+			credentialId?: number;
+	  };
 
 /**
  * Serialized representation of AuthStorage for passing to subagent workers.
@@ -1134,7 +1171,7 @@ function raceCredentialRefreshWithSignal<T>(
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
-		return right.type === "api_key" && left.key === right.key;
+		return right.type === "api_key" && left.key === right.key && left.apiEndpoint === right.apiEndpoint;
 	}
 	if (right.type !== "oauth") return false;
 	return (
@@ -1144,7 +1181,15 @@ function authCredentialEquals(left: AuthCredential, right: AuthCredential): bool
 		left.accountId === right.accountId &&
 		left.email === right.email &&
 		left.projectId === right.projectId &&
-		left.enterpriseUrl === right.enterpriseUrl
+		left.enterpriseUrl === right.enterpriseUrl &&
+		left.apiEndpoint === right.apiEndpoint &&
+		left.orgId === right.orgId &&
+		left.orgName === right.orgName &&
+		left.kiroClientId === right.kiroClientId &&
+		left.kiroClientSecret === right.kiroClientSecret &&
+		left.kiroClientSecretExpiresAt === right.kiroClientSecretExpiresAt &&
+		left.kiroTokenEndpoint === right.kiroTokenEndpoint &&
+		left.kiroAuthMethod === right.kiroAuthMethod
 	);
 }
 
@@ -2849,30 +2894,47 @@ export class AuthStorage {
 			signal: ctrl.signal,
 			fetch: ctrl.fetch,
 		});
-		if (typeof result === "string") {
+		const storeProvider = def.storeCredentialsAs ?? provider;
+		const replace = def.credentialPolicy === "replace";
+		const apiKeyResult = isApiKeyLoginResult(result);
+		if (apiKeyResult) {
 			// Some flows (e.g. ollama) return "" to signal that no key was entered.
-			if (!result) {
-				return undefined;
-			}
-			const newCredential: ApiKeyCredential = { type: "api_key", key: result, source: "login" };
-			const stored = this.#store.upsertAuthCredentialRemote
-				? await this.#store.upsertAuthCredentialRemote(provider, newCredential)
-				: this.#store.upsertAuthCredentialForProvider(provider, newCredential);
+			const key = typeof result === "string" ? result : result.key;
+			if (!key) return undefined;
+			const newCredential: ApiKeyCredential = {
+				type: "api_key",
+				key,
+				source: "login",
+				...(typeof result === "string" || result.apiEndpoint === undefined
+					? {}
+					: { apiEndpoint: result.apiEndpoint }),
+			};
+			const stored = replace
+				? this.#store.replaceAuthCredentialsRemote
+					? await this.#store.replaceAuthCredentialsRemote(storeProvider, [newCredential])
+					: this.#store.replaceAuthCredentialsForProvider(storeProvider, [newCredential])
+				: this.#store.upsertAuthCredentialRemote
+					? await this.#store.upsertAuthCredentialRemote(storeProvider, newCredential)
+					: this.#store.upsertAuthCredentialForProvider(storeProvider, newCredential);
 			this.#setStoredCredentials(
-				provider,
+				storeProvider,
 				stored.map(entry => ({ id: entry.id, credential: entry.credential })),
 			);
-			this.#resetProviderAssignments(provider);
+			this.#resetProviderAssignments(storeProvider);
 			return { type: "api_key" };
 		}
 		// Stamp the interactive-login instant: providers with an absolute grant
 		// lifetime (Anthropic) need it to surface re-login deadlines, and token
 		// refreshes only ever merge over this credential without clearing it.
 		const newCredential: OAuthCredential = { type: "oauth", ...result, authorizedAt: Date.now() };
-		// Use #upsertOAuthCredential to upsert the new credential.
-		// Any legacy api_key rows from older versions will be cleaned up so they do not
-		// shadow the new OAuth row, while preserving other active OAuth credentials.
-		await this.#upsertOAuthCredential(def.storeCredentialsAs ?? provider, newCredential);
+		if (replace) {
+			await this.set(storeProvider, newCredential);
+		} else {
+			// Use #upsertOAuthCredential to upsert the new credential.
+			// Any legacy api_key rows from older versions will be cleaned up so they do not
+			// shadow the new OAuth row, while preserving other active OAuth credentials.
+			await this.#upsertOAuthCredential(storeProvider, newCredential);
+		}
 		return {
 			type: "oauth",
 			email: newCredential.email,
@@ -5123,6 +5185,12 @@ export class AuthStorage {
 				apiEndpoint: result.newCredentials.apiEndpoint ?? selection.credential.apiEndpoint,
 				orgId: result.newCredentials.orgId ?? selection.credential.orgId,
 				orgName: result.newCredentials.orgName ?? selection.credential.orgName,
+				kiroClientId: result.newCredentials.kiroClientId ?? selection.credential.kiroClientId,
+				kiroClientSecret: result.newCredentials.kiroClientSecret ?? selection.credential.kiroClientSecret,
+				kiroClientSecretExpiresAt:
+					result.newCredentials.kiroClientSecretExpiresAt ?? selection.credential.kiroClientSecretExpiresAt,
+				kiroTokenEndpoint: result.newCredentials.kiroTokenEndpoint ?? selection.credential.kiroTokenEndpoint,
+				kiroAuthMethod: result.newCredentials.kiroAuthMethod ?? selection.credential.kiroAuthMethod,
 				authorizedAt: result.newCredentials.authorizedAt ?? selection.credential.authorizedAt,
 			};
 			if (credentialId !== undefined) {
@@ -5237,7 +5305,9 @@ export class AuthStorage {
 	 * Peek at API key for a provider without refreshing OAuth tokens.
 	 * Used for model discovery where we only need to know if credentials exist
 	 * and get a best-effort token. For GitHub Copilot we preserve enterprise
-	 * routing metadata so discovery can hit the correct host.
+	 * routing metadata so discovery can hit the correct host. For Kiro we
+	 * preserve the selected profile and API-key endpoint in a structured value
+	 * consumed only by Kiro discovery.
 	 */
 	async peekApiKey(provider: string): Promise<string | undefined> {
 		const runtimeKey = this.#runtimeOverrides.get(provider);
@@ -5263,6 +5333,12 @@ export class AuthStorage {
 						apiEndpoint: oauthSelection.credential.apiEndpoint,
 					});
 				}
+				if (provider === "kiro") {
+					return JSON.stringify({
+						token: oauthSelection.credential.access,
+						profileArn: oauthSelection.credential.orgId,
+					});
+				}
 				return oauthSelection.credential.access;
 			}
 		}
@@ -5274,7 +5350,11 @@ export class AuthStorage {
 			credential => credential.type === "api_key" && credential.source === "login",
 		);
 		if (loginApiKeySelection) {
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const key = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (provider === "kiro" && key && loginApiKeySelection.credential.apiEndpoint) {
+				return JSON.stringify({ token: key, apiEndpoint: loginApiKeySelection.credential.apiEndpoint });
+			}
+			return key;
 		}
 
 		const envKey = getEnvApiKey(provider);
@@ -5282,7 +5362,11 @@ export class AuthStorage {
 
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key");
 		if (apiKeySelection) {
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const key = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (provider === "kiro" && key && apiKeySelection.credential.apiEndpoint) {
+				return JSON.stringify({ token: key, apiEndpoint: apiKeySelection.credential.apiEndpoint });
+			}
+			return key;
 		}
 
 		return this.#fallbackResolver?.(provider) ?? undefined;
@@ -5353,6 +5437,88 @@ export class AuthStorage {
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
 		return this.#fallbackResolver?.(provider) ?? undefined;
+	}
+
+	/**
+	 * Resolve the selected credential while preserving non-secret route metadata.
+	 * Unlike {@link AuthStorage.getApiKey}, this exposes a Kiro API-key endpoint
+	 * and the durable credential id needed by provider-owned transports. The
+	 * bearer/token value follows exactly the same precedence and refresh policy
+	 * as {@link AuthStorage.getApiKey}.
+	 */
+	async resolveCredential(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedAuthCredential | undefined> {
+		const runtimeKey = this.#runtimeOverrides.get(provider);
+		if (runtimeKey) return { type: "api_key", token: runtimeKey, origin: "runtime" };
+
+		const configKey = this.#configOverrides.get(provider);
+		if (configKey) return { type: "api_key", token: configKey, origin: "config" };
+
+		const oauthResolved = await this.#resolveOAuthSelection(provider, sessionId, options);
+		if (oauthResolved) {
+			return {
+				type: "oauth",
+				token: oauthResolved.apiKey,
+				refreshable: oauthResolved.credential.refresh.length > 0,
+				orgId: oauthResolved.credential.orgId,
+				orgName: oauthResolved.credential.orgName,
+				accountId: oauthResolved.credential.accountId,
+				email: oauthResolved.credential.email,
+				apiEndpoint: oauthResolved.credential.apiEndpoint,
+				credentialId: oauthResolved.credentialId,
+			};
+		}
+
+		const loginApiKeySelection = await this.#selectApiKeyCredential(
+			provider,
+			sessionId,
+			options,
+			credential => credential.source === "login",
+		);
+		if (loginApiKeySelection) {
+			this.#recordSessionCredential(provider, sessionId, "api_key", loginApiKeySelection.index);
+			const token = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (token !== undefined) {
+				return {
+					type: "api_key",
+					token,
+					apiEndpoint: loginApiKeySelection.credential.apiEndpoint,
+					origin: "api_key",
+					credentialId: this.#getStoredCredentials(provider)[loginApiKeySelection.index]?.id,
+				};
+			}
+		}
+
+		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
+
+		const envKey = getEnvApiKey(provider);
+		if (envKey) return { type: "api_key", token: envKey, origin: "env" };
+
+		const apiKeySelection = await this.#selectApiKeyCredential(
+			provider,
+			sessionId,
+			options,
+			credential => credential.source !== "login",
+		);
+		if (apiKeySelection) {
+			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
+			const token = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (token !== undefined) {
+				return {
+					type: "api_key",
+					token,
+					apiEndpoint: apiKeySelection.credential.apiEndpoint,
+					origin: "api_key",
+					credentialId: this.#getStoredCredentials(provider)[apiKeySelection.index]?.id,
+				};
+			}
+		}
+
+		const fallback = this.#fallbackResolver?.(provider);
+		return fallback ? { type: "api_key", token: fallback, origin: "fallback" } : undefined;
 	}
 
 	/**
