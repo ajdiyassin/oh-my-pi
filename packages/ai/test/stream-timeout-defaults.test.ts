@@ -96,9 +96,36 @@ describe("getStreamFirstEventTimeoutMs(idleTimeoutMs, fallbackMs)", () => {
 		expect(getStreamFirstEventTimeoutMs(undefined, 300_000)).toBe(42);
 	});
 
-	it("treats PI_STREAM_FIRST_EVENT_TIMEOUT_MS=0 as a watchdog disable", () => {
+	it("treats PI_STREAM_FIRST_EVENT_TIMEOUT_MS=0 as an explicit watchdog disable", () => {
 		Bun.env.PI_STREAM_FIRST_EVENT_TIMEOUT_MS = "0";
-		expect(getStreamFirstEventTimeoutMs(undefined, 300_000)).toBeUndefined();
+		expect(getStreamFirstEventTimeoutMs(undefined, 300_000)).toBe(0);
+	});
+
+	it("does not inherit the idle timeout after the first-event watchdog is disabled", async () => {
+		Bun.env.PI_STREAM_FIRST_EVENT_TIMEOUT_MS = "0";
+		const firstItemTimeoutMs = getStreamFirstEventTimeoutMs(undefined, 300_000);
+		const abortController = new AbortController();
+		const firstPull = Promise.withResolvers<IteratorResult<string>>();
+		const pendingStream: AsyncIterable<string> = {
+			[Symbol.asyncIterator]: () => ({ next: () => firstPull.promise }),
+		};
+
+		const settled = expectRejectsWithMessage(async () => {
+			for await (const _item of iterateWithIdleTimeout(pendingStream, {
+				firstItemTimeoutMs,
+				idleTimeoutMs: 20,
+				errorMessage: "idle timeout",
+				firstItemErrorMessage: "first progress timeout",
+				abortSignal: abortController.signal,
+			})) {
+				// The pending source never produces an item.
+			}
+		}, "caller abort");
+
+		await Bun.sleep(40);
+		abortController.abort(new Error("caller abort"));
+		await settled;
+		firstPull.resolve({ done: true, value: undefined });
 	});
 
 	it("falls back to the 300s global default when no fallback or env is provided", () => {

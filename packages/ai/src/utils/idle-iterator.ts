@@ -58,7 +58,7 @@ export function getStreamFirstEventTimeoutMs(
 	fallbackMs: number = DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_MS,
 ): number | undefined {
 	const fallback = idleTimeoutMs === undefined ? fallbackMs : Math.max(fallbackMs, idleTimeoutMs);
-	return normalizeIdleTimeoutMs($env.PI_STREAM_FIRST_EVENT_TIMEOUT_MS, fallback);
+	return normalizeIdleTimeoutMs($env.PI_STREAM_FIRST_EVENT_TIMEOUT_MS, fallback) ?? 0;
 }
 
 /**
