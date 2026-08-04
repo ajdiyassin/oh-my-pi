@@ -1,6 +1,9 @@
 import { kiroManagementRequest } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
-import { parseKiroProfileArn } from "@oh-my-pi/pi-catalog/wire/kiro";
+import {
+	extractKiroProfileSegment,
+	parseKiroProfileArn,
+} from "@oh-my-pi/pi-catalog/wire/kiro";
 import type {
 	UsageAmount,
 	UsageFetchContext,
@@ -190,7 +193,7 @@ async function fetchKiroUsage(params: UsageFetchParams, ctx: UsageFetchContext):
 	const fallbackReset = resetMillis(payload.nextDateReset);
 	// Display-safe quota identity. The full ARN embeds the AWS account id and
 	// never leaves this function.
-	const profileSegment = parsed.profileArn.slice(parsed.profileArn.lastIndexOf("/") + 1);
+	const profileSegment = extractKiroProfileSegment(parsed.profileArn)!;
 
 	const limits = breakdown
 		.map((entry, index) =>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
+import { reportMatchesActiveAccount } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/active-oauth-account";
 import {
 	buildRedactionMap,
 	collectUnreportedAccounts,
@@ -221,6 +222,34 @@ describe("collectUnreportedAccounts", () => {
 		expect(collectUnreportedAccounts([legacyReport, freshReport], [legacy, fresh])).toEqual([]);
 		// The org-attributed sibling alone still does NOT cover the legacy row.
 		expect(collectUnreportedAccounts([freshReport], [legacy, fresh])).toEqual([legacy]);
+	});
+
+	it("matches Kiro profile reports to stored ARN identities without exposing the ARN", () => {
+		const profileArn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/EXAMPLEPROFILE";
+		const report: UsageReport = {
+			provider: "kiro",
+			fetchedAt: Date.now(),
+			metadata: { orgId: "EXAMPLEPROFILE" },
+			limits: [
+				{
+					id: "credits",
+					label: "credits",
+					scope: { provider: "kiro", orgId: "EXAMPLEPROFILE" },
+					amount: { unit: "unknown", used: 1, limit: 10, usedFraction: 0.1 },
+				},
+			],
+		};
+		const account: UsageAccountIdentity = { provider: "kiro", type: "oauth", orgId: profileArn };
+
+		expect(collectUnreportedAccounts([report], [account])).toEqual([]);
+		expect(reportMatchesActiveAccount(report, { orgId: profileArn })).toBe(true);
+
+		const text = stripVTControlCharacters(formatUsageBreakdown([report], [account], Date.now()));
+		expect(text).toContain("Kiro — 1 account");
+		expect(text).toContain("EXAMPLEPROFILE");
+		expect(text).not.toContain(profileArn);
+		expect(text).not.toContain("111122223333");
+		expect(text).not.toContain("no usage data");
 	});
 });
 

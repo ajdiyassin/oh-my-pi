@@ -129,6 +129,12 @@ export function parseKiroProfileArn(profileArn: string | undefined | null): Kiro
 	return { apiRegion, profileArn };
 }
 
+/** Extract the display-safe trailing profile segment from a validated ARN. */
+export function extractKiroProfileSegment(profileArn: string | undefined | null): string | undefined {
+	const parsed = parseKiroProfileArn(profileArn);
+	return parsed?.profileArn.slice(parsed.profileArn.lastIndexOf("/") + 1);
+}
+
 /** Extract region from a profile ARN without accepting unrelated strings. */
 export function extractRegionFromKiroProfileArn(profileArn: string | undefined | null): string | undefined {
 	return parseKiroProfileArn(profileArn)?.apiRegion;

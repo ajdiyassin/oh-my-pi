@@ -1,8 +1,22 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
+import { extractKiroProfileSegment } from "@oh-my-pi/pi-catalog/wire/kiro";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 
+const KIRO_PROFILE_ARN_PREFIX = "arn:aws:codewhisperer:";
+
 function normalizeIdentityValue(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
+	if (typeof value !== "string" || !value.trim()) return undefined;
+	const trimmed = value.trim();
+	const profileSegment = extractKiroProfileSegment(trimmed);
+	if (profileSegment) return profileSegment.toLowerCase();
+	if (trimmed.startsWith(KIRO_PROFILE_ARN_PREFIX)) return undefined;
+	return trimmed.toLowerCase();
+}
+
+function displayIdentityValue(value: string | undefined): string | undefined {
+	if (!value?.trim()) return undefined;
+	const trimmed = value.trim();
+	return extractKiroProfileSegment(trimmed) ?? (trimmed.startsWith(KIRO_PROFILE_ARN_PREFIX) ? undefined : trimmed);
 }
 
 /**
@@ -17,7 +31,7 @@ export function formatActiveAccountLabel(identity: OAuthAccountIdentity | undefi
 	if (!identity) return undefined;
 	const base = identity.email || identity.accountId || identity.projectId;
 	if (!base) return undefined;
-	const org = identity.orgName || identity.orgId;
+	const org = identity.orgName || displayIdentityValue(identity.orgId);
 	return org && org !== base ? `${base} (${org})` : base;
 }
 

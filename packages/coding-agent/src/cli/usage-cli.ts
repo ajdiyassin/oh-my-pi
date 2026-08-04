@@ -17,6 +17,7 @@ import {
 	type UsageReport,
 	type UsageUnit,
 } from "@oh-my-pi/pi-ai";
+import { extractKiroProfileSegment } from "@oh-my-pi/pi-catalog/wire/kiro";
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
@@ -48,6 +49,19 @@ export interface UsageAccountIdentity {
 	orgName?: string;
 	/** Epoch ms of the interactive login that minted the OAuth grant (see `OAuthCredentials.authorizedAt`). */
 	authorizedAt?: number;
+}
+
+const KIRO_PROFILE_ARN_PREFIX = "arn:aws:codewhisperer:";
+
+/** Convert a stored Kiro profile ARN to the privacy-safe usage identity. */
+function normalizeUsageOrgId(provider: string, orgId: string | undefined): string | undefined {
+	if (provider !== "kiro" || orgId === undefined) return orgId;
+	return extractKiroProfileSegment(orgId) ?? (orgId.startsWith(KIRO_PROFILE_ARN_PREFIX) ? undefined : orgId);
+}
+
+function normalizeUsageAccount(account: UsageAccountIdentity): UsageAccountIdentity {
+	const orgId = normalizeUsageOrgId(account.provider, account.orgId);
+	return orgId === account.orgId ? account : { ...account, orgId };
 }
 
 /**
@@ -318,7 +332,8 @@ export function collectUnreportedAccounts(
 		list.push(report);
 		byProvider.set(report.provider, list);
 	}
-	return accounts.filter(account => {
+	const normalizedAccounts = accounts.map(normalizeUsageAccount);
+	return normalizedAccounts.filter(account => {
 		const providerReports = byProvider.get(account.provider) ?? [];
 		if (providerReports.length === 0) return true;
 		if (account.type === "api_key") return false;
@@ -643,13 +658,14 @@ export function formatUsageBreakdown(
 	redaction?: Map<string, string>,
 	disabled: DisabledCredentialSummary[] = [],
 ): string {
+	const normalizedAccounts = accounts.map(normalizeUsageAccount);
 	const reportsByProvider = new Map<string, UsageReport[]>();
 	for (const report of reports) {
 		const list = reportsByProvider.get(report.provider) ?? [];
 		list.push(report);
 		reportsByProvider.set(report.provider, list);
 	}
-	const unreported = collectUnreportedAccounts(reports, accounts);
+	const unreported = collectUnreportedAccounts(reports, normalizedAccounts);
 	const unreportedByProvider = new Map<string, UsageAccountIdentity[]>();
 	for (const account of unreported) {
 		const list = unreportedByProvider.get(account.provider) ?? [];
@@ -657,7 +673,7 @@ export function formatUsageBreakdown(
 		unreportedByProvider.set(account.provider, list);
 	}
 	const disabledByProvider = new Map<string, DisabledCredentialSummary[]>();
-	for (const summary of filterActionableDisabledCredentials(disabled, accounts)) {
+	for (const summary of filterActionableDisabledCredentials(disabled, normalizedAccounts)) {
 		const list = disabledByProvider.get(summary.provider) ?? [];
 		list.push(summary);
 		disabledByProvider.set(summary.provider, list);
@@ -891,7 +907,7 @@ function collectStoredAccounts(authStorage: AuthStorage): UsageAccountIdentity[]
 					accountId: credential.accountId,
 					projectId: credential.projectId,
 					enterpriseUrl: credential.enterpriseUrl,
-					orgId: credential.orgId,
+					orgId: normalizeUsageOrgId(provider, credential.orgId),
 					orgName: credential.orgName,
 					authorizedAt: credential.authorizedAt,
 				});
