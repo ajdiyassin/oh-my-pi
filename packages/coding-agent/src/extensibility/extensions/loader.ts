@@ -133,6 +133,33 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	}
 }
 
+interface ProviderRegistrationTarget {
+	registerProvider(name: string, config: ProviderConfig, sourceId: string): void;
+}
+
+/**
+ * Apply queued extension provider registrations without letting one invalid
+ * registration prevent later providers from becoming available.
+ */
+export function drainPendingProviderRegistrations(
+	runtime: Pick<IExtensionRuntime, "pendingProviderRegistrations">,
+	modelRegistry: ProviderRegistrationTarget,
+): void {
+	const pending = runtime.pendingProviderRegistrations;
+	runtime.pendingProviderRegistrations = [];
+	for (const { name, config, sourceId } of pending) {
+		try {
+			modelRegistry.registerProvider(name, config, sourceId);
+		} catch (error) {
+			logger.error("Extension provider registration failed", {
+				provider: name,
+				sourceId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
 /**
  * ExtensionAPI implementation for an extension.
  * Registration methods write to the extension object.

@@ -83,6 +83,7 @@ import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./ex
 import {
 	discoverAndLoadExtensions,
 	discoverExtensionPaths,
+	drainPendingProviderRegistrations,
 	type ExtensionContext,
 	type ExtensionFactory,
 	ExtensionRunner,
@@ -759,10 +760,7 @@ export async function loadCliExtensionProviders(
 	for (const sourceId of new Set(activeSources)) {
 		modelRegistry.clearSourceRegistrations(sourceId);
 	}
-	for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-		modelRegistry.registerProvider(name, config, sourceId);
-	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
+	drainPendingProviderRegistrations(extensionsResult.runtime, modelRegistry);
 	await modelRegistry.refreshRuntimeProviders();
 }
 
@@ -2080,10 +2078,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 		if (extensionsResult.runtime.pendingProviderRegistrations.length > 0) {
-			for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-				modelRegistry.registerProvider(name, config, sourceId);
-			}
-			extensionsResult.runtime.pendingProviderRegistrations = [];
+			drainPendingProviderRegistrations(extensionsResult.runtime, modelRegistry);
 		}
 		// Hydrate cached runtime (extension) provider catalogs before model
 		// resolution. Dynamic-only providers have no synchronous registration side
