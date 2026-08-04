@@ -270,6 +270,23 @@ describe("Kiro stream transport", () => {
 		expect(overflow.errorMessage).toContain("exceeds the context window");
 		expect(fetchCalls).toBe(1);
 
+		const empty413 = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => new Response(null, { status: 413 }),
+		}).result();
+		expect(empty413.stopReason).toBe("error");
+		expect(empty413.errorStatus).toBe(413);
+		expect(AIError.is(empty413.errorId, AIError.Flag.ContextOverflow)).toBe(true);
+
+		const nonOverflow413 = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () =>
+				Response.json({ __type: "ValidationException", message: "invalid request" }, { status: 413 }),
+		}).result();
+		expect(nonOverflow413.stopReason).toBe("error");
+		expect(nonOverflow413.errorStatus).toBe(413);
+		expect(AIError.is(nonOverflow413.errorId, AIError.Flag.ContextOverflow)).toBe(true);
+
 		const rejectingFetch: FetchImpl = async () => {
 			throw new Error("fetch should not run for invalid routing");
 		};

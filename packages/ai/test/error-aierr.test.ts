@@ -129,6 +129,23 @@ describe("AIError.finalize", () => {
 		expect(AIError.is(result.id, AIError.Flag.Transient)).toBe(true);
 	});
 
+	it("classifies captured overflow text without a raw request dump", async () => {
+		const result = await AIError.finalize(new Error("request rejected"), {
+			capturedErrorResponse: { status: 400, bodyText: "input exceeds the context window" },
+		});
+		expect(result.status).toBe(400);
+		expect(result.message).toContain("input exceeds the context window");
+		expect(AIError.is(result.id, AIError.Flag.ContextOverflow)).toBe(true);
+	});
+
+	it("does not classify an unrelated captured 413 response as overflow", async () => {
+		const result = await AIError.finalize(new Error("request rejected"), {
+			capturedErrorResponse: { status: 413, bodyText: "invalid request" },
+		});
+		expect(result.status).toBe(413);
+		expect(AIError.is(result.id, AIError.Flag.ContextOverflow)).toBe(false);
+	});
+
 	it("keeps an incomplete-stream provider error retryable through finalize + classifyMessage", async () => {
 		const result = await AIError.finalize(
 			new AIError.ProviderResponseError("stream ended without a finish reason", { kind: "incomplete-stream" }),

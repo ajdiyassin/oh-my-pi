@@ -67,7 +67,8 @@ export async function kiroHttpError(response: Response): Promise<KiroApiError> {
 	);
 	const detail = boundedMessage(parsed?.message) ?? boundedMessage(parsed?.reason);
 	const message = `Kiro HTTP ${response.status}${code ? ` ${code}` : ""}${detail ? `: ${detail}` : ""}`;
-	return new KiroApiError(message, response.status, { headers: response.headers, code, requestId });
+	const error = new KiroApiError(message, response.status, { headers: response.headers, code, requestId });
+	return response.status === 413 ? AIError.attach(error, AIError.create(AIError.Flag.ContextOverflow)) : error;
 }
 
 export function kiroEventStreamError(headers: Record<string, string>, payload: unknown): KiroStreamError {

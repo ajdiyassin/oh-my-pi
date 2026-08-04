@@ -27,12 +27,13 @@ export interface FormatMessageOptions {
  * formatters: lightweight retry-after extraction, the raw-dump finalizer, and
  * the copilot rewrite.
  *
- * Selection is driven by inputs, not a mode flag: a `rawRequestDump` routes
- * through {@link finalizeErrorMessage} (retry-after + raw dump + captured body),
- * otherwise the lightweight {@link formatErrorMessageWithRetryAfter} is used.
+ * Selection is driven by inputs, not a mode flag: a `rawRequestDump` or
+ * `capturedErrorResponse` routes through {@link finalizeErrorMessage} (retry-after
+ * + raw dump + captured body), otherwise the lightweight
+ * {@link formatErrorMessageWithRetryAfter} is used.
  */
 export async function formatMessage(error: unknown, opts: FormatMessageOptions = {}): Promise<string> {
-	let message = opts.rawRequestDump
+	let message = opts.rawRequestDump || opts.capturedErrorResponse
 		? await finalizeErrorMessage(error, opts.rawRequestDump, opts.capturedErrorResponse)
 		: formatErrorMessageWithRetryAfter(error);
 	if (opts.provider === "github-copilot") {
