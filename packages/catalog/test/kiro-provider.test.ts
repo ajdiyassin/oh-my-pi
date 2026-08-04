@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { sanitizeKiroModelCatalog } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import {
 	DEFAULT_MODEL_PER_PROVIDER,
@@ -57,6 +58,37 @@ describe("Kiro provider discovery", () => {
 		expect(descriptor?.requiresExplicitModelSelection).toBe(true);
 		expect(descriptor?.dynamicModelsAuthoritative).toBe(true);
 		expect(DEFAULT_MODEL_PER_PROVIDER).not.toHaveProperty("kiro");
+	});
+
+	test("ignores missing, malformed, unknown, and known defaultModel metadata", () => {
+		const modelIds = ["kiro-model-one", "kiro-model-two"];
+		const withoutDefault = catalogResponse(modelIds);
+		delete withoutDefault.defaultModel;
+		const payloads: Record<string, unknown>[] = [
+			withoutDefault,
+			catalogResponse(modelIds),
+			{ ...catalogResponse(modelIds), defaultModel: "not-an-advertised-model" },
+			{ ...catalogResponse(modelIds), defaultModel: 42 },
+			{ ...catalogResponse(modelIds), defaultModel: { id: modelIds[0] } },
+		];
+
+		for (const payload of payloads) {
+			const catalog = sanitizeKiroModelCatalog(payload);
+			expect(catalog.models.map(model => model.modelId)).toEqual(modelIds);
+			expect("defaultModel" in catalog).toBe(false);
+		}
+	});
+
+	test("preserves every exact live model ID and authoritative order", async () => {
+		const modelIds = ["provider/model-z", "provider/model-a", "provider/model-zeta"];
+		const options = kiroModelManagerOptions({
+			apiKey: JSON.stringify({ token: "catalog-token", apiEndpoint: API_ENDPOINT }),
+			fetch: jsonFetch({ ...catalogResponse(modelIds), defaultModel: "unknown-model" }),
+		});
+
+		const models = await options.fetchDynamicModels?.();
+
+		expect(models?.map(model => model.id)).toEqual(modelIds);
 	});
 
 	test("sends the selected OAuth profile ARN in the ListAvailableModels body", async () => {

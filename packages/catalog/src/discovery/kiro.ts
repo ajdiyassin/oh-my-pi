@@ -82,7 +82,6 @@ export interface SanitizedKiroModel {
 }
 
 export interface SanitizedKiroModelCatalog {
-	defaultModel: string;
 	models: SanitizedKiroModel[];
 }
 
@@ -273,15 +272,13 @@ function sanitizeModel(value: unknown): SanitizedKiroModel {
  */
 export function sanitizeKiroModelCatalog(value: unknown): SanitizedKiroModelCatalog {
 	const raw = record(value, "top-level.object");
-	const defaultModelId = safeId(raw.defaultModel, "default-model.id");
 	if (!Array.isArray(raw.models) || raw.models.length === 0 || raw.models.length > MAX_MODELS) {
 		failSanitize("models.count");
 	}
 	const models = raw.models.map(sanitizeModel);
 	const ids = models.map(model => model.modelId);
 	if (new Set(ids).size !== ids.length) failSanitize("models.duplicate-id");
-	if (!ids.includes(defaultModelId)) failSanitize("default-model.missing");
-	return { defaultModel: defaultModelId, models };
+	return { models };
 }
 
 function schemaError(modelId: string, detail: string): never {
