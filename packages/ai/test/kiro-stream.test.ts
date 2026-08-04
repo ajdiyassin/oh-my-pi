@@ -8,7 +8,7 @@ import {
 	streamKiro,
 } from "@oh-my-pi/pi-ai/providers/kiro/index";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
-import type { Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessageEvent, Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 
@@ -222,6 +222,40 @@ describe("Kiro stream transport", () => {
 		expect(result.usage.input).toBe(12);
 		expect(result.usage.output).toBe(7);
 		expect(result.usage.reasoningTokens).toBe(3);
+	});
+
+	test("assembles interleaved string deltas, object snapshots, and zero-argument tools per ID", async () => {
+		const events: Array<[string, unknown]> = [
+			["toolUseEvent", { toolUseId: "tool-a", name: "first", input: '{"x":' }],
+			["toolUseEvent", { toolUseId: "tool-b", name: "second", input: { value: 1 } }],
+			["toolUseEvent", { toolUseId: "tool-a", input: "1}", stop: true }],
+			["toolUseEvent", { toolUseId: "tool-b", input: { value: 2 }, stop: true }],
+			["toolUseEvent", { toolUseId: "tool-c", name: "third", input: "", stop: true }],
+		];
+		const stream = streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => responseForEvents(events),
+		});
+		const emitted: AssistantMessageEvent[] = [];
+		for await (const event of stream) emitted.push(event);
+		const result = await stream.result();
+
+		expect(emitted.filter(event => event.type === "toolcall_start")).toHaveLength(3);
+		expect(emitted.filter(event => event.type === "toolcall_end")).toHaveLength(3);
+		expect(
+			emitted
+				.filter(event => event.type === "toolcall_delta")
+				.map(event => ({ contentIndex: event.contentIndex, delta: event.delta })),
+		).toEqual([
+			{ contentIndex: 0, delta: '{"x":' },
+			{ contentIndex: 0, delta: "1}" },
+		]);
+		expect(result.content).toEqual([
+			{ type: "toolCall", id: "tool-a", name: "first", arguments: { x: 1 } },
+			{ type: "toolCall", id: "tool-b", name: "second", arguments: { value: 2 } },
+			{ type: "toolCall", id: "tool-c", name: "third", arguments: {} },
+		]);
+		expect(result.stopReason).toBe("toolUse");
 	});
 
 	test("retries one pre-output capacity response", async () => {
