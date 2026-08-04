@@ -12,6 +12,13 @@
 - Fixed OpenAI Codex usage telemetry blocking explicitly allowed ChatGPT Team credentials when a weekly `used_percent` rounded to 100, which could route multi-account sessions to an actually exhausted sibling instead ([#7617](https://github.com/can1357/oh-my-pi/issues/7617)).
 - Fixed OpenAI Codex GPT-5.x requests sending optional `reasoning.summary`, `reasoning.context`, and `text.verbosity` controls by default, reducing Codex `server_error` disconnects from unsupported request shapes. ([#4949](https://github.com/can1357/oh-my-pi/issues/4949))
 - Classified concurrent-request caps separately from quota exhaustion so they use a short retry backoff without burning a credential, and rotate credentials for account-scoped 403 caps such as Devin's overall message limit.
+### Added
+
+- Added capture-backed OAuth Kiro quota reporting with profile-scoped usage limits and privacy-safe metadata.
+
+### Fixed
+
+- Hardened native Kiro stream handling for semantic output timeouts, context-overflow classification, supported user images, interleaved tool calls, malformed lifecycle events, and retry/replay boundaries.
 
 ## [17.2.7] - 2026-08-03
 

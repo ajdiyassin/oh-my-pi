@@ -59,6 +59,10 @@
 ### Changed
 
 - Upgraded the bundled omptype schema engine: intersection and pipe operators, bigint and RegExp literals in the string DSL, Standard Schema V1 interop, JSON Schema import via fromJsonSchema(), and richer union/collection error reporting.
+### Fixed
+
+- Fixed usage tombstone matching to keep same-email or same-account records visible when they belong to different organizations, while preserving safe same-org and org-only matching.
+- Isolated extension provider registration failures so one invalid registration no longer prevents later providers from loading in CLI or session initialization paths.
 
 ## [17.2.7] - 2026-08-03
 

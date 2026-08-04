@@ -7,6 +7,9 @@
 ### Fixed
 
 - Fixed Amazon Bedrock catalog generation omitting AWS GovCloud `us-gov.*` Claude inference-profile IDs, so selectors like `amazon-bedrock/us-gov.anthropic.claude-sonnet-4-5-…` resolve instead of failing model lookup (or misrouting commercial `us.*` geos onto `us-east-1` with GovCloud credentials).
+### Fixed
+
+- Fixed Kiro catalog discovery to ignore untrusted `defaultModel` metadata while preserving exact discovered model identities.
 
 ## [17.2.7] - 2026-08-03
 
