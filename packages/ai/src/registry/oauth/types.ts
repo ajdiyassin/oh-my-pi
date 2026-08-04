@@ -10,13 +10,20 @@ export type OAuthCredentials = {
 	email?: string;
 	accountId?: string;
 	apiEndpoint?: string;
-	/** Registered-client state used by Builder ID OAuth providers such as Kiro. */
+	/** Registered-client state used by the native Kiro IAM Identity Center flow. */
 	kiroClientId?: string;
 	kiroClientSecret?: string;
 	/** Unix epoch milliseconds; `0` means the registered client does not expire. */
 	kiroClientSecretExpiresAt?: number;
 	kiroTokenEndpoint?: string;
-	kiroAuthMethod?: "device" | "browser";
+	kiroAuthMethod?: "device";
+	kiroRegistrationVersion?: number;
+	kiroStartUrl?: string;
+	kiroOidcRegion?: string;
+	kiroScopes?: readonly string[];
+	kiroAccountType?: "iam-identity-center";
+	kiroProfileArn?: string;
+	kiroRuntimeRegion?: string;
 	/**
 	 * Organization/workspace the token is scoped to (e.g. an Anthropic org
 	 * UUID or a ChatGPT workspace id). Captured once at login; token refreshes
@@ -50,9 +57,16 @@ export type OAuthProvider = OAuthProviderUnion;
 
 export type OAuthProviderId = OAuthProvider | (string & {});
 
+export interface OAuthLoginCache {
+	get(key: string, options?: { includeExpired?: boolean }): string | null;
+	set(key: string, value: string, expiresAtSec: number): void;
+	deletePrefix?(prefix: string): void;
+}
+
 export type OAuthPrompt = {
 	message: string;
 	placeholder?: string;
+	defaultValue?: string;
 	allowEmpty?: boolean;
 };
 
@@ -94,6 +108,8 @@ export interface OAuthController {
 	onPrompt?(prompt: OAuthPrompt): Promise<string>;
 	signal?: AbortSignal;
 	fetch?: FetchImpl;
+	cache?: OAuthLoginCache;
+	sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 
 export interface OAuthLoginCallbacks extends OAuthController {

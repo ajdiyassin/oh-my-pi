@@ -1676,10 +1676,10 @@ export class SelectorController {
 				onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
 					// The dialog renders the full URL (SSH-safe copy target) and
 					// opens the browser best-effort.
-					dialog.showAuth(info.url, info.instructions, info.launchUrl);
+					dialog.showAuth(info.url, info.instructions, info.launchUrl, providerId !== "kiro");
 				},
-				onPrompt: (prompt: { message: string; placeholder?: string }) =>
-					dialog.showPrompt(prompt.message, prompt.placeholder),
+				onPrompt: (prompt: { message: string; placeholder?: string; defaultValue?: string }) =>
+					dialog.showPrompt(prompt.message, prompt.placeholder, prompt.defaultValue),
 				onProgress: (message: string) => {
 					dialog.showProgress(message);
 				},

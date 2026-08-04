@@ -241,8 +241,9 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 			onProgress(message) {
 				process.stdout.write(`${message}\n`);
 			},
-			onPrompt(p) {
-				return ask(`${p.message}${p.placeholder ? ` (${p.placeholder})` : ""}:`);
+			onPrompt: async p => {
+				const answer = await ask(`${p.message}${p.placeholder ? ` (${p.placeholder})` : ""}:`);
+				return answer.trim() === "" && p.defaultValue ? p.defaultValue : answer;
 			},
 			...(usesManualInput
 				? {

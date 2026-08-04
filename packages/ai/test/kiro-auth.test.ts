@@ -1,13 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { kiroProvider } from "@oh-my-pi/pi-ai/registry/kiro";
 import { getOAuthApiKey } from "@oh-my-pi/pi-ai/registry/oauth";
 import {
-	loginKiroBrowser,
+	KIRO_IDENTITY_CENTER_SCOPES,
 	loginKiroDevice,
 	refreshKiroToken,
 	selectKiroProfile,
 	validateKiroApiKey,
 } from "@oh-my-pi/pi-ai/registry/oauth/kiro";
+import type { OAuthLoginCache, OAuthPrompt } from "@oh-my-pi/pi-ai/registry/oauth/types";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 
 const PROFILE_ONE = "arn:aws:codewhisperer:us-east-1:123456789012:profile/one";
@@ -35,14 +37,48 @@ function modelCatalog(): Record<string, unknown> {
 	};
 }
 
-function registeredClient(): Record<string, unknown> {
+function registeredClient(region = "us-east-1"): Record<string, unknown> {
 	return {
 		clientId: "client-id",
 		clientSecret: "client-secret",
 		clientSecretExpiresAt: 4_000_000_000,
-		authorizationEndpoint: "https://oidc.us-east-1.amazonaws.com/authorize",
-		tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+		tokenEndpoint: `https://oidc.${region}.amazonaws.com/token`,
 	};
+}
+
+function deviceAuthorization(): Record<string, unknown> {
+	return {
+		deviceCode: "device-code",
+		userCode: "ABCD-EFGH",
+		verificationUri: "https://device.sso.aws.dev/verify",
+		verificationUriComplete: "https://device.sso.aws.dev/complete",
+		expiresIn: 60,
+		interval: 1,
+	};
+}
+
+function profileResponses(): Response[] {
+	return [json({ profiles: [{ arn: PROFILE_TWO, profileName: "Work" }] }), json({ profiles: [] })];
+}
+
+function memoryCache(): { cache: OAuthLoginCache; values: Map<string, string> } {
+	const values = new Map<string, string>();
+	const expiry = new Map<string, number>();
+	const cache: OAuthLoginCache = {
+		get: (key, options) => {
+			const value = values.get(key);
+			if (value === undefined) return null;
+			if (options?.includeExpired !== true && (expiry.get(key) ?? 0) <= Math.floor(Date.now() / 1000)) {
+				return null;
+			}
+			return value;
+		},
+		set: (key, value, expiresAtSec) => {
+			values.set(key, value);
+			expiry.set(key, expiresAtSec);
+		},
+	};
+	return { cache, values };
 }
 
 describe("Kiro authentication", () => {
@@ -84,6 +120,151 @@ describe("Kiro authentication", () => {
 		expect(called).toBe(false);
 	});
 
+	it("shows only AWS, deferred Builder, and API choices", async () => {
+		const prompts: OAuthPrompt[] = [];
+		const progress: string[] = [];
+		const result = await kiroProvider.login({
+			onAuth: () => {},
+			onProgress: message => progress.push(message),
+			onPrompt: async prompt => {
+				prompts.push(prompt);
+				return "Builder";
+			},
+			fetch: async () => {
+				throw new Error("Builder must not make a request");
+			},
+		});
+
+		expect(result).toBe("");
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]?.message).toBe("Select login method\n❯ AWS\n  Builder\n  API");
+		expect(prompts[0]?.defaultValue).toBe("AWS");
+		expect(progress).toEqual(["Builder ID login is not available yet."]);
+	});
+
+	it("routes API selection to the existing API-key validation path", async () => {
+		const prompts: string[] = [];
+		let called = false;
+		await expect(
+			kiroProvider.login({
+				onAuth: () => {},
+				onPrompt: async prompt => {
+					prompts.push(prompt.message);
+					return prompts.length === 1 ? "API" : "not-a-key";
+				},
+				fetch: async () => {
+					called = true;
+					return json(modelCatalog());
+				},
+			}),
+		).rejects.toMatchObject({ kind: "validation" });
+		expect(prompts).toEqual(["Select login method\n❯ AWS\n  Builder\n  API", "Paste your Kiro API key"]);
+		expect(called).toBe(false);
+	});
+
+	it("prompts for IAM Identity Center values, uses exact registration scopes, and reuses saved state", async () => {
+		const { cache, values } = memoryCache();
+		const prompts: OAuthPrompt[] = [];
+		const authEvents: Array<{ url: string; instructions?: string }> = [];
+		const progress: string[] = [];
+		const firstRequests: Array<{ url: string; init?: RequestInit }> = [];
+		const firstResponses: Response[] = [
+			json(registeredClient("eu-west-1")),
+			json(deviceAuthorization()),
+			json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 }),
+			...profileResponses(),
+		];
+		const firstFetch: FetchImpl = async (input, init) => {
+			firstRequests.push({ url: String(input), init });
+			return firstResponses.shift() ?? json({ error: "unexpected request" }, 500);
+		};
+
+		const first = await loginKiroDevice(
+			{
+				onAuth: info => authEvents.push(info),
+				onProgress: message => progress.push(message),
+				onPrompt: async prompt => {
+					prompts.push(prompt);
+					return prompt.message === "Enter Start URL" ? "https://example.awsapps.com/start" : "eu-west-1";
+				},
+				fetch: firstFetch,
+				cache,
+				sleep: async () => {},
+			},
+			{},
+		);
+
+		expect(prompts.map(prompt => prompt.message)).toEqual(["Enter Start URL", "Enter Region"]);
+		const registrationBody = JSON.parse(String(firstRequests[0]?.init?.body)) as Record<string, unknown>;
+		expect(registrationBody).toEqual({
+			clientName: "Kiro CLI",
+			clientType: "public",
+			scopes: [...KIRO_IDENTITY_CENTER_SCOPES],
+		});
+		expect(Object.keys(registrationBody).sort()).toEqual(["clientName", "clientType", "scopes"]);
+		expect(firstRequests[0]?.url).toBe("https://oidc.eu-west-1.amazonaws.com/client/register");
+		const deviceBody = JSON.parse(String(firstRequests[1]?.init?.body)) as Record<string, unknown>;
+		expect(deviceBody).toEqual({
+			clientId: "client-id",
+			clientSecret: "client-secret",
+			startUrl: "https://example.awsapps.com/start",
+		});
+		expect(authEvents).toEqual([
+			{
+				url: "https://device.sso.aws.dev/complete",
+				instructions:
+					"Confirm the following code in the browser\nCode: ABCD-EFGH\nOpen this URL: https://device.sso.aws.dev/complete",
+			},
+		]);
+		expect(progress).toEqual(["Logging in..."]);
+		expect(first).toMatchObject({
+			kiroAuthMethod: "device",
+			kiroAccountType: "iam-identity-center",
+			kiroOidcRegion: "eu-west-1",
+			kiroRuntimeRegion: "us-east-1",
+			kiroProfileArn: PROFILE_TWO,
+			apiEndpoint: "https://runtime.us-east-1.kiro.dev/",
+			orgId: PROFILE_TWO,
+		});
+		for (const value of values.values()) {
+			expect(value).not.toContain("device-code");
+			expect(value).not.toContain("ABCD-EFGH");
+			expect(value).not.toContain("access-token");
+			expect(value).not.toContain("refresh-token");
+		}
+
+		const secondPrompts: OAuthPrompt[] = [];
+		const secondRequests: string[] = [];
+		const secondResponses: Response[] = [
+			json(deviceAuthorization()),
+			json({ accessToken: "second-access", refreshToken: "second-refresh", expiresIn: 3600 }),
+			...profileResponses(),
+		];
+		const secondFetch: FetchImpl = async input => {
+			secondRequests.push(String(input));
+			return secondResponses.shift() ?? json({ error: "unexpected request" }, 500);
+		};
+		await loginKiroDevice(
+			{
+				onAuth: () => {},
+				onPrompt: async prompt => {
+					secondPrompts.push(prompt);
+					return "";
+				},
+				fetch: secondFetch,
+				cache,
+				sleep: async () => {},
+			},
+			{},
+		);
+		expect(secondPrompts.map(prompt => prompt.defaultValue)).toEqual([
+			"https://example.awsapps.com/start",
+			"eu-west-1",
+		]);
+		expect(secondRequests[0]).toBe("https://oidc.eu-west-1.amazonaws.com/device_authorization");
+		expect(secondRequests).not.toContain("https://oidc.eu-west-1.amazonaws.com/client/register");
+	});
+
 	it("prompts for a selected profile without exposing its ARN or account id", async () => {
 		let prompt = "";
 		const selected = await selectKiroProfile("access-token", "us-east-1", {
@@ -107,110 +288,7 @@ describe("Kiro authentication", () => {
 		expect(prompt).not.toContain("123456789012");
 	});
 
-	it("completes the Builder ID device flow and preserves client/profile state", async () => {
-		const requests: string[] = [];
-		const authEvents: Array<{ url: string; instructions?: string }> = [];
-		const responses = [
-			json(registeredClient()),
-			json({
-				deviceCode: "device-code",
-				userCode: "ABCD-EFGH",
-				verificationUriComplete: "https://device.sso.aws.dev/complete",
-				expiresIn: 60,
-				interval: 1,
-			}),
-			json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 }),
-			json({ profiles: [{ arn: PROFILE_TWO, profileName: "Work" }] }),
-		];
-		const fetch: FetchImpl = async input => {
-			requests.push(String(input));
-			return responses.shift() ?? json({ error: "unexpected request" }, 500);
-		};
-
-		const result = await loginKiroDevice(
-			{
-				onAuth: info => authEvents.push(info),
-				onPrompt: async () => "",
-				fetch,
-			},
-			{ region: "us-east-1", scopes: ["codewhisperer:completions"], pollIntervalMs: 1 },
-		);
-
-		expect(requests).toEqual([
-			"https://oidc.us-east-1.amazonaws.com/client/register",
-			"https://oidc.us-east-1.amazonaws.com/device_authorization",
-			"https://oidc.us-east-1.amazonaws.com/token",
-			"https://management.us-east-1.kiro.dev/",
-		]);
-		expect(authEvents).toEqual([
-			{ url: "https://device.sso.aws.dev/complete", instructions: "Enter code ABCD-EFGH" },
-		]);
-		expect(result).toMatchObject({
-			access: "access-token",
-			refresh: "refresh-token",
-			kiroClientId: "client-id",
-			kiroClientSecret: "client-secret",
-			kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
-			kiroAuthMethod: "device",
-			orgId: PROFILE_TWO,
-			orgName: "Work",
-		});
-	});
-
-	it("completes browser/manual Builder ID login with PKCE and profile selection", async () => {
-		const requests: Array<{ url: string; init?: RequestInit }> = [];
-		const authUrls: string[] = [];
-		const responses = [
-			json(registeredClient()),
-			json({ accessToken: "browser-access", refreshToken: "browser-refresh", expiresIn: 3600 }),
-			json({ profiles: [{ arn: PROFILE_ONE, profileName: "Personal" }] }),
-		];
-		const fetch: FetchImpl = async (input, init) => {
-			requests.push({ url: String(input), init });
-			return responses.shift() ?? json({ error: "unexpected request" }, 500);
-		};
-
-		const result = await loginKiroBrowser(
-			{
-				onAuth: info => authUrls.push(info.url),
-				onPrompt: async () => "",
-				onManualCodeInput: async () => "authorization-code",
-				fetch,
-			},
-			{
-				issuerUrl: "https://view.awsapps.com/start",
-				region: "us-east-1",
-				preferredPort: 8765,
-				scopes: ["codewhisperer:completions"],
-				manualInputOnly: true,
-			},
-		);
-
-		expect(authUrls).toHaveLength(1);
-		const authorizationUrl = new URL(authUrls[0]!);
-		expect(authorizationUrl.searchParams.get("client_id")).toBe("client-id");
-		expect(authorizationUrl.searchParams.get("redirect_uri")).toBe("http://localhost:8765/oauth/callback");
-		expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
-		expect(requests[1]?.url).toBe("https://oidc.us-east-1.amazonaws.com/token");
-		const tokenBody = JSON.parse(String(requests[1]?.init?.body)) as Record<string, unknown>;
-		expect(tokenBody).toMatchObject({
-			clientId: "client-id",
-			clientSecret: "client-secret",
-			code: "authorization-code",
-			grantType: "authorization_code",
-			redirectUri: "http://localhost:8765/oauth/callback",
-		});
-		expect(typeof tokenBody.codeVerifier).toBe("string");
-		expect(result).toMatchObject({
-			access: "browser-access",
-			refresh: "browser-refresh",
-			kiroAuthMethod: "browser",
-			orgId: PROFILE_ONE,
-			orgName: "Personal",
-		});
-	});
-
-	it("refreshes with the registered client and keeps the selected profile", async () => {
+	it("refreshes with the registered client, rotates refresh tokens, and keeps profile provenance", async () => {
 		let request: RequestInit | undefined;
 		const result = await refreshKiroToken(
 			{
@@ -220,15 +298,18 @@ describe("Kiro authentication", () => {
 				kiroClientId: "client-id",
 				kiroClientSecret: "client-secret",
 				kiroClientSecretExpiresAt: Date.now() + 60_000,
-				kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				kiroTokenEndpoint: "https://oidc.eu-west-1.amazonaws.com/token",
 				kiroAuthMethod: "device",
+				kiroOidcRegion: "eu-west-1",
+				kiroProfileArn: PROFILE_TWO,
+				kiroRuntimeRegion: "us-east-1",
 				orgId: PROFILE_TWO,
 				orgName: "Work",
 			},
 			{
 				fetch: async (_input, init) => {
 					request = init;
-					return json({ accessToken: "new-access", expiresIn: 3600 });
+					return json({ accessToken: "new-access", refreshToken: "rotated-refresh", expiresIn: 3600 });
 				},
 			},
 		);
@@ -241,15 +322,34 @@ describe("Kiro authentication", () => {
 		});
 		expect(result).toMatchObject({
 			access: "new-access",
-			refresh: "refresh-token",
+			refresh: "rotated-refresh",
 			kiroClientId: "client-id",
 			kiroAuthMethod: "device",
+			kiroOidcRegion: "eu-west-1",
+			kiroProfileArn: PROFILE_TWO,
+			kiroRuntimeRegion: "us-east-1",
 			orgId: PROFILE_TWO,
-			orgName: "Work",
 		});
 	});
 
-	it("rejects an expired registered client and cancellation before network access", async () => {
+	it("retains the old refresh token when rotation is omitted and rejects expired clients/cancellation", async () => {
+		const retained = await refreshKiroToken(
+			{
+				access: "old-access",
+				refresh: "refresh-token",
+				expires: 0,
+				kiroClientId: "client-id",
+				kiroClientSecret: "client-secret",
+				kiroClientSecretExpiresAt: Date.now() + 60_000,
+				kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				kiroAuthMethod: "device",
+			},
+			{
+				fetch: async () => json({ accessToken: "new-access", expiresIn: 3600 }),
+			},
+		);
+		expect(retained.refresh).toBe("refresh-token");
+
 		let called = false;
 		await expect(
 			refreshKiroToken(
@@ -283,7 +383,7 @@ describe("Kiro authentication", () => {
 					signal: controller.signal,
 					fetch: async () => json(registeredClient()),
 				},
-				{ region: "us-east-1", scopes: ["codewhisperer:completions"] },
+				{ region: "us-east-1", startUrl: "https://example.awsapps.com/start" },
 			),
 		).rejects.toBeInstanceOf(AIError.LoginCancelledError);
 	});

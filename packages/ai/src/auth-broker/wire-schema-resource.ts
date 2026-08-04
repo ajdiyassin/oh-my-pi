@@ -107,7 +107,14 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"kiroClientSecret?": "string",
 		"kiroClientSecretExpiresAt?": "number",
 		"kiroTokenEndpoint?": "string",
-		"kiroAuthMethod?": "'device' | 'browser'",
+		"kiroAuthMethod?": "'device'",
+		"kiroRegistrationVersion?": "number",
+		"kiroStartUrl?": "string",
+		"kiroOidcRegion?": "string",
+		"kiroScopes?": "string[]",
+		"kiroAccountType?": "'iam-identity-center'",
+		"kiroProfileArn?": "string",
+		"kiroRuntimeRegion?": "string",
 		"authorizedAt?": "number",
 	});
 
@@ -128,7 +135,14 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"kiroClientSecret?": "string",
 		"kiroClientSecretExpiresAt?": "number",
 		"kiroTokenEndpoint?": "string",
-		"kiroAuthMethod?": "'device' | 'browser'",
+		"kiroAuthMethod?": "'device'",
+		"kiroRegistrationVersion?": "number",
+		"kiroStartUrl?": "string",
+		"kiroOidcRegion?": "string",
+		"kiroScopes?": "string[]",
+		"kiroAccountType?": "'iam-identity-center'",
+		"kiroProfileArn?": "string",
+		"kiroRuntimeRegion?": "string",
 		"authorizedAt?": "number",
 	});
 

@@ -7,42 +7,33 @@ import {
 } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 import {
+	KIRO_BOOTSTRAP_REGIONS,
 	kiroRuntimeBaseUrl,
 	parseKiroProfileArn,
-	resolveKiroApiRegion,
 	validateKiroApiRegion,
 } from "@oh-my-pi/pi-catalog/wire/kiro";
 import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
 import * as AIError from "../../error";
 import { throwIfKiroLoginCancelled } from "../kiro-cancellation";
-import { OAuthCallbackFlow } from "./callback-server";
 import { pollOAuthDeviceCodeFlow } from "./device-code";
-import type { OAuthController, OAuthCredentials, OAuthLoginCallbacks } from "./types";
+import type { OAuthController, OAuthCredentials, OAuthLoginCache, OAuthLoginCallbacks } from "./types";
 
 const PROVIDER = "kiro";
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 128 * 1024;
-const BUILDER_ID_START_URL = "https://view.awsapps.com/start";
-const KIRO_SSO_REGIONS = [
-	"us-east-1",
-	"eu-central-1",
-	"us-west-1",
-	"us-west-2",
-	"us-east-2",
-	"ap-southeast-1",
-	"ap-southeast-2",
-	"ap-northeast-1",
-	"ap-south-1",
-	"eu-west-1",
-	"eu-west-2",
-	"eu-west-3",
-	"eu-north-1",
-	"eu-south-1",
-	"eu-south-2",
-	"eu-central-2",
-] as const;
-const AUTHORIZATION_CODE_GRANTS = ["authorization_code", "refresh_token"] as const;
+const KIRO_CLIENT_NAME = "Kiro CLI";
+const KIRO_REGISTRATION_VERSION = 1;
+const KIRO_PROMPT_CACHE_KEY = "oauth:kiro:iam-identity-center:prompt-defaults";
+const KIRO_REGISTRATION_CACHE_PREFIX = "oauth:kiro:iam-identity-center:registration:";
+const KIRO_CACHE_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
+const KIRO_REFRESH_MARGIN_MS = 60_000;
 const DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+
+export const KIRO_IDENTITY_CENTER_SCOPES = [
+	"codewhisperer:completions",
+	"codewhisperer:analysis",
+	"codewhisperer:conversations",
+] as const;
 
 export interface KiroRequestOptions {
 	fetch?: FetchImpl;
@@ -55,22 +46,9 @@ export interface KiroProfileSelectionOptions extends KiroRequestOptions {
 	onPrompt?: OAuthController["onPrompt"];
 }
 
-export interface KiroBrowserConfig {
-	issuerUrl: string;
-	region?: string;
-	preferredPort: number;
-	scopes: readonly string[];
-	clientName?: string;
-	manualInputOnly?: boolean;
-}
-
 export interface KiroDeviceConfig {
 	region?: string;
-	clientName?: string;
 	startUrl?: string;
-	scopes?: readonly string[];
-	maxPolls?: number;
-	pollIntervalMs?: number;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -96,8 +74,7 @@ function positiveNumber(value: unknown, field: string): number {
 	return value;
 }
 
-function registeredClientExpiry(value: unknown): number | undefined {
-	if (value === undefined) return undefined;
+function registeredClientExpiry(value: unknown): number {
 	if (!Number.isSafeInteger(value) || (value as number) < 0) {
 		throw new AIError.OAuthError("Kiro response has invalid clientSecretExpiresAt", {
 			kind: "validation",
@@ -248,6 +225,34 @@ function profileLabel(profile: KiroProfileSummary, index: number): string {
 	return `${index + 1}. ${region ? `profile in ${region}` : "unnamed profile"}`;
 }
 
+function chooseKiroProfile(
+	profiles: KiroProfileSummary[],
+	signal: AbortSignal | undefined,
+	onPrompt: OAuthController["onPrompt"],
+): Promise<{ profileArn: string; profileName: string | undefined }> {
+	if (profiles.length === 0) {
+		throw new AIError.OAuthError("No Kiro profiles are available", { kind: "discovery", provider: PROVIDER });
+	}
+	let selected = profiles[0]!;
+	if (profiles.length > 1) {
+		if (!onPrompt) throw new AIError.OnPromptRequiredError("Kiro profile selection");
+		const choices = profiles.map((profile, index) => profileLabel(profile, index)).join("\n");
+		return onPrompt({
+			message: `Select a Kiro profile:\n${choices}`,
+			placeholder: "1",
+		}).then(answer => {
+			throwIfKiroLoginCancelled(signal);
+			const index = Number.parseInt(answer.trim(), 10) - 1;
+			if (!Number.isInteger(index) || index < 0 || index >= profiles.length) {
+				throw new AIError.OAuthError("Invalid Kiro profile selection", { kind: "validation", provider: PROVIDER });
+			}
+			selected = profiles[index]!;
+			return { profileArn: selected.arn, profileName: selected.profileName };
+		});
+	}
+	return Promise.resolve({ profileArn: selected.arn, profileName: selected.profileName });
+}
+
 export async function selectKiroProfile(
 	token: string,
 	apiRegion: string,
@@ -265,40 +270,39 @@ export async function selectKiroProfile(
 			cause,
 		});
 	}
-	if (profiles.length === 0) {
-		throw new AIError.OAuthError("No Kiro profiles are available", { kind: "discovery", provider: PROVIDER });
-	}
-	let selected = profiles[0]!;
-	if (profiles.length > 1) {
-		if (!options.onPrompt) throw new AIError.OnPromptRequiredError("Kiro profile selection");
-		const choices = profiles.map((profile, index) => profileLabel(profile, index)).join("\n");
-		const answer = await options.onPrompt({
-			message: `Select a Kiro profile:\n${choices}`,
-			placeholder: "1",
-		});
-		throwIfKiroLoginCancelled(options.signal);
-		const index = Number.parseInt(answer.trim(), 10) - 1;
-		if (!Number.isInteger(index) || index < 0 || index >= profiles.length) {
-			throw new AIError.OAuthError("Invalid Kiro profile selection", { kind: "validation", provider: PROVIDER });
+	return chooseKiroProfile(profiles, options.signal, options.onPrompt);
+}
+
+async function selectKiroProfileFromBootstrapRegions(
+	token: string,
+	options: KiroProfileSelectionOptions = {},
+): Promise<{ profileArn: string; profileName: string | undefined }> {
+	const profiles: KiroProfileSummary[] = [];
+	let lastError: unknown;
+	for (const apiRegion of KIRO_BOOTSTRAP_REGIONS) {
+		try {
+			profiles.push(
+				...(await listKiroAvailableProfiles({
+					apiRegion,
+					token,
+					fetch: options.fetch,
+					signal: options.signal,
+				})),
+			);
+		} catch (cause) {
+			throwIfKiroLoginCancelled(options.signal);
+			lastError = cause;
 		}
-		selected = profiles[index]!;
 	}
-	return { profileArn: selected.arn, profileName: selected.profileName };
-}
-
-function base64Url(bytes: Uint8Array): string {
-	return btoa(String.fromCharCode(...bytes))
-		.replaceAll("+", "-")
-		.replaceAll("/", "_")
-		.replaceAll("=", "");
-}
-
-interface KiroRegisteredClient {
-	clientId: string;
-	clientSecret: string;
-	clientSecretExpiresAt: number | undefined;
-	authorizationEndpoint: string;
-	tokenEndpoint: string;
+	const uniqueProfiles = [...new Map(profiles.map(profile => [profile.arn, profile])).values()];
+	if (uniqueProfiles.length === 0 && lastError) {
+		throw new AIError.OAuthError("Unable to discover Kiro profiles", {
+			kind: "discovery",
+			provider: PROVIDER,
+			cause: lastError,
+		});
+	}
+	return chooseKiroProfile(uniqueProfiles, options.signal, options.onPrompt);
 }
 
 function validateStartUrl(value: string): string {
@@ -323,7 +327,7 @@ function validateStartUrl(value: string): string {
 	return parsed.toString();
 }
 
-function validateOidcEndpoint(value: unknown, region: string, path: "/authorize" | "/token", field: string): string {
+function validateOidcEndpoint(value: unknown, region: string, field: string): string {
 	const endpoint = requiredString(value, field);
 	let parsed: URL;
 	try {
@@ -339,7 +343,7 @@ function validateOidcEndpoint(value: unknown, region: string, path: "/authorize"
 		parsed.protocol !== "https:" ||
 		parsed.hostname !== `oidc.${region}.amazonaws.com` ||
 		parsed.port !== "" ||
-		parsed.pathname !== path ||
+		parsed.pathname !== "/token" ||
 		parsed.search !== "" ||
 		parsed.hash !== "" ||
 		parsed.username !== "" ||
@@ -347,7 +351,40 @@ function validateOidcEndpoint(value: unknown, region: string, path: "/authorize"
 	) {
 		throw new AIError.OAuthError(`Kiro returned an invalid ${field}`, { kind: "validation", provider: PROVIDER });
 	}
-	return parsed.toString();
+	return endpoint;
+}
+
+function validateVerificationUri(value: unknown, field: string): string {
+	const uri = requiredString(value, field);
+	let parsed: URL;
+	try {
+		parsed = new URL(uri);
+	} catch (cause) {
+		throw new AIError.OAuthError(`Kiro returned an invalid ${field}`, {
+			kind: "validation",
+			provider: PROVIDER,
+			cause,
+		});
+	}
+	if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "") {
+		throw new AIError.OAuthError(`Kiro returned an invalid ${field}`, { kind: "validation", provider: PROVIDER });
+	}
+	return uri;
+}
+
+function requiredUserCode(value: unknown): string {
+	const userCode = requiredString(value, "userCode");
+	if (userCode.length > 128 || /[\u0000-\u001f\u007f]/.test(userCode)) {
+		throw new AIError.OAuthError("Kiro returned an invalid userCode", { kind: "validation", provider: PROVIDER });
+	}
+	return userCode;
+}
+
+interface KiroRegisteredClient {
+	clientId: string;
+	clientSecret: string;
+	clientSecretExpiresAt: number;
+	tokenEndpoint: string;
 }
 
 function parseRegisteredClient(body: unknown, region: string): KiroRegisteredClient {
@@ -356,197 +393,209 @@ function parseRegisteredClient(body: unknown, region: string): KiroRegisteredCli
 		clientId: requiredString(registration.clientId, "clientId"),
 		clientSecret: requiredString(registration.clientSecret, "clientSecret"),
 		clientSecretExpiresAt: registeredClientExpiry(registration.clientSecretExpiresAt),
-		authorizationEndpoint: validateOidcEndpoint(
-			registration.authorizationEndpoint ?? `https://oidc.${region}.amazonaws.com/authorize`,
-			region,
-			"/authorize",
-			"authorizationEndpoint",
-		),
-		tokenEndpoint: validateOidcEndpoint(
-			registration.tokenEndpoint ?? `https://oidc.${region}.amazonaws.com/token`,
-			region,
-			"/token",
-			"tokenEndpoint",
-		),
+		tokenEndpoint: validateOidcEndpoint(registration.tokenEndpoint, region, "tokenEndpoint"),
 	};
 }
 
-async function registerBrowserClient(
-	ctrl: OAuthController,
-	config: KiroBrowserConfig,
+function exactKiroScopes(value: unknown): boolean {
+	return (
+		Array.isArray(value) &&
+		value.length === KIRO_IDENTITY_CENTER_SCOPES.length &&
+		value.every((scope, index) => scope === KIRO_IDENTITY_CENTER_SCOPES[index])
+	);
+}
+
+function registrationCacheKey(region: string): string {
+	return `${KIRO_REGISTRATION_CACHE_PREFIX}${region}`;
+}
+
+function registrationIsUsable(client: KiroRegisteredClient): boolean {
+	return client.clientSecretExpiresAt === 0 || client.clientSecretExpiresAt > Date.now();
+}
+
+function readCachedRegisteredClient(
+	cache: OAuthLoginCache | undefined,
 	region: string,
-	redirectUri: string,
-): Promise<KiroRegisteredClient | undefined> {
+): KiroRegisteredClient | undefined {
+	if (!cache) return undefined;
+	let raw: string | null;
+	try {
+		raw = cache.get(registrationCacheKey(region));
+	} catch {
+		return undefined;
+	}
+	if (!raw) return undefined;
+	try {
+		const data = record(JSON.parse(raw), "Invalid cached Kiro client registration");
+		if (
+			data.registrationVersion !== KIRO_REGISTRATION_VERSION ||
+			data.region !== region ||
+			data.flow !== "device_code" ||
+			data.clientName !== KIRO_CLIENT_NAME ||
+			!exactKiroScopes(data.scopes)
+		) {
+			return undefined;
+		}
+		const expiresAt = data.clientSecretExpiresAt;
+		if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) < 0) return undefined;
+		const client: KiroRegisteredClient = {
+			clientId: requiredString(data.clientId, "clientId"),
+			clientSecret: requiredString(data.clientSecret, "clientSecret"),
+			clientSecretExpiresAt: expiresAt as number,
+			tokenEndpoint: validateOidcEndpoint(data.tokenEndpoint, region, "tokenEndpoint"),
+		};
+		return registrationIsUsable(client) ? client : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function registrationCacheExpirySeconds(client: KiroRegisteredClient): number {
+	const nowSeconds = Math.floor(Date.now() / 1000);
+	if (client.clientSecretExpiresAt === 0) return nowSeconds + KIRO_CACHE_TTL_SECONDS;
+	return Math.max(nowSeconds + 1, Math.floor(client.clientSecretExpiresAt / 1000));
+}
+
+function cacheRegisteredClient(cache: OAuthLoginCache | undefined, region: string, client: KiroRegisteredClient): void {
+	if (!cache) return;
+	try {
+		cache.set(
+			registrationCacheKey(region),
+			JSON.stringify({
+				registrationVersion: KIRO_REGISTRATION_VERSION,
+				region,
+				flow: "device_code",
+				clientName: KIRO_CLIENT_NAME,
+				scopes: KIRO_IDENTITY_CENTER_SCOPES,
+				...client,
+			}),
+			registrationCacheExpirySeconds(client),
+		);
+	} catch {
+		// Cache persistence is best-effort; the active login must still complete.
+	}
+}
+
+async function registerKiroClient(ctrl: OAuthLoginCallbacks, region: string): Promise<KiroRegisteredClient> {
 	const registered = await request(
 		`https://oidc.${region}.amazonaws.com/client/register`,
 		{
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
-				clientName: config.clientName ?? "oh-my-pi",
+				clientName: KIRO_CLIENT_NAME,
 				clientType: "public",
-				scopes: config.scopes,
-				grantTypes: AUTHORIZATION_CODE_GRANTS,
-				issuerUrl: config.issuerUrl,
-				redirectUris: [redirectUri],
+				scopes: KIRO_IDENTITY_CENTER_SCOPES,
 			}),
 		},
 		{ fetch: ctrl.fetch, signal: ctrl.signal },
 		"device-auth",
 		"allow-non-json-error",
 	);
-	return registered.response.ok ? parseRegisteredClient(registered.body, region) : undefined;
+	if (!registered.response.ok) {
+		throw new AIError.OAuthError(`Kiro client registration failed: HTTP ${registered.response.status}`, {
+			kind: "device-auth",
+			provider: PROVIDER,
+			status: registered.response.status,
+		});
+	}
+	const client = parseRegisteredClient(registered.body, region);
+	cacheRegisteredClient(ctrl.cache, region, client);
+	return client;
 }
 
-class KiroBrowserFlow extends OAuthCallbackFlow {
-	readonly #config: KiroBrowserConfig;
-	#verifier = "";
-	#client: KiroRegisteredClient | undefined;
-	#region: string | undefined;
+async function getRegisteredClient(ctrl: OAuthLoginCallbacks, region: string): Promise<KiroRegisteredClient> {
+	return readCachedRegisteredClient(ctrl.cache, region) ?? registerKiroClient(ctrl, region);
+}
 
-	constructor(ctrl: OAuthController, config: KiroBrowserConfig) {
-		super(ctrl, {
-			preferredPort: config.preferredPort,
-			callbackPath: "/oauth/callback",
-			manualInputOnly: config.manualInputOnly,
-		});
-		this.#config = config;
+interface KiroPromptDefaults {
+	startUrl: string;
+	region: string;
+}
+
+function readPromptDefaults(cache: OAuthLoginCache | undefined): KiroPromptDefaults | undefined {
+	if (!cache) return undefined;
+	let raw: string | null;
+	try {
+		raw = cache.get(KIRO_PROMPT_CACHE_KEY);
+	} catch {
+		return undefined;
 	}
-
-	async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string }> {
-		for (const region of this.#config.region ? [this.#config.region] : KIRO_SSO_REGIONS) {
-			const client = await registerBrowserClient(this.ctrl, this.#config, region, redirectUri);
-			if (!client) continue;
-			this.#client = client;
-			this.#region = region;
-			break;
-		}
-		if (!this.#client || !this.#region) {
-			throw new AIError.OAuthError("No supported AWS region accepted this access portal", {
-				kind: "discovery",
-				provider: PROVIDER,
-			});
-		}
-		this.#verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)));
-		const challenge = base64Url(
-			new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(this.#verifier))),
-		);
-		const url = new URL(this.#client.authorizationEndpoint);
-		url.search = new URLSearchParams({
-			response_type: "code",
-			client_id: this.#client.clientId,
-			redirect_uri: redirectUri,
-			scope: this.#config.scopes.join(" "),
-			state,
-			code_challenge: challenge,
-			code_challenge_method: "S256",
-		}).toString();
-		return { url: url.toString() };
-	}
-
-	async exchangeToken(code: string, _state: string, redirectUri: string): Promise<OAuthCredentials> {
-		const verifier = this.#verifier;
-		const client = this.#client;
-		const region = this.#region;
-		this.#verifier = "";
-		if (!verifier || !client || !region) {
-			throw new AIError.OAuthError("Kiro browser authorization state was already consumed", {
-				kind: "validation",
-				provider: PROVIDER,
-			});
-		}
-		const token = await request(
-			client.tokenEndpoint,
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					clientId: client.clientId,
-					clientSecret: client.clientSecret,
-					code,
-					codeVerifier: verifier,
-					grantType: "authorization_code",
-					redirectUri,
-				}),
-			},
-			{ fetch: this.ctrl.fetch, signal: this.ctrl.signal },
-			"token-exchange",
-		);
-		if (!token.response.ok) {
-			throw new AIError.OAuthError(`Kiro token exchange failed: HTTP ${token.response.status}`, {
-				kind: "token-exchange",
-				provider: PROVIDER,
-				status: token.response.status,
-			});
-		}
-		const result = credentials(token.body);
-		const selected = await selectKiroProfile(result.access, resolveKiroApiRegion(region), {
-			fetch: this.ctrl.fetch,
-			signal: this.ctrl.signal,
-			onPrompt: this.ctrl.onPrompt,
-		});
-		return {
-			...result,
-			kiroClientId: client.clientId,
-			kiroClientSecret: client.clientSecret,
-			kiroClientSecretExpiresAt: client.clientSecretExpiresAt,
-			kiroTokenEndpoint: client.tokenEndpoint,
-			kiroAuthMethod: "browser",
-			orgId: selected.profileArn,
-			orgName: selected.profileName,
-		};
+	if (!raw) return undefined;
+	try {
+		const data = record(JSON.parse(raw), "Invalid cached Kiro login defaults");
+		const startUrl = validateStartUrl(requiredString(data.startUrl, "startUrl"));
+		const region = validateKiroApiRegion(requiredString(data.region, "region"));
+		return region ? { startUrl, region } : undefined;
+	} catch {
+		return undefined;
 	}
 }
 
-export async function loginKiroBrowser(
+function cachePromptDefaults(cache: OAuthLoginCache | undefined, defaults: KiroPromptDefaults): void {
+	if (!cache) return;
+	try {
+		cache.set(
+			KIRO_PROMPT_CACHE_KEY,
+			JSON.stringify(defaults),
+			Math.floor(Date.now() / 1000) + KIRO_CACHE_TTL_SECONDS,
+		);
+	} catch {
+		// Prompt defaults are convenience state and must not block authentication.
+	}
+}
+
+async function resolveDeviceInputs(
 	ctrl: OAuthLoginCallbacks,
-	config: KiroBrowserConfig,
-): Promise<OAuthCredentials> {
-	const region = config.region === undefined ? undefined : validateKiroApiRegion(config.region);
-	if ((config.region !== undefined && !region) || config.scopes.length === 0) {
-		throw new AIError.OAuthError("Invalid Kiro browser configuration", { kind: "configuration", provider: PROVIDER });
+	config: KiroDeviceConfig,
+): Promise<{ startUrl: string; region: string }> {
+	const cached = readPromptDefaults(ctrl.cache);
+	const startUrlInput =
+		config.startUrl ??
+		(await ctrl.onPrompt({
+			message: "Enter Start URL",
+			...(cached?.startUrl ? { defaultValue: cached.startUrl } : {}),
+		}));
+	const startUrl = validateStartUrl((startUrlInput.trim() || cached?.startUrl || "").trim());
+
+	const regionInput =
+		config.region ??
+		(await ctrl.onPrompt({
+			message: "Enter Region",
+			...(cached?.region ? { defaultValue: cached.region } : {}),
+		}));
+	const region = validateKiroApiRegion((regionInput.trim() || cached?.region || "").trim());
+	if (!region) {
+		throw new AIError.OAuthError("Invalid AWS Identity Center Region", {
+			kind: "validation",
+			provider: PROVIDER,
+		});
 	}
-	const result = await new KiroBrowserFlow(ctrl, {
-		...config,
-		issuerUrl: validateStartUrl(config.issuerUrl),
-		region,
-	}).login();
-	throwIfKiroLoginCancelled(ctrl.signal);
-	return result;
+	const inputs = { startUrl, region };
+	cachePromptDefaults(ctrl.cache, inputs);
+	return inputs;
 }
 
 interface KiroDeviceAuthorization {
 	client: KiroRegisteredClient;
 	region: string;
-	device: JsonRecord;
+	startUrl: string;
+	deviceCode: string;
+	userCode: string;
+	verificationUri: string;
+	verificationUriComplete: string;
+	expiresIn: number;
+	interval: number;
 }
 
-async function tryDeviceAuthorization(
+async function startDeviceAuthorization(
 	ctrl: OAuthLoginCallbacks,
-	config: KiroDeviceConfig,
+	client: KiroRegisteredClient,
 	region: string,
 	startUrl: string,
-): Promise<KiroDeviceAuthorization | undefined> {
-	const host = `https://oidc.${region}.amazonaws.com`;
-	const registered = await request(
-		`${host}/client/register`,
-		{
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({
-				clientName: config.clientName ?? "oh-my-pi",
-				clientType: "public",
-				scopes: config.scopes ?? [],
-			}),
-		},
-		{ fetch: ctrl.fetch, signal: ctrl.signal },
-		"device-auth",
-		"allow-non-json-error",
-	);
-	if (!registered.response.ok) return undefined;
-	const client = parseRegisteredClient(registered.body, region);
+): Promise<KiroDeviceAuthorization> {
 	const authorized = await request(
-		`${host}/device_authorization`,
+		`https://oidc.${region}.amazonaws.com/device_authorization`,
 		{
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -556,84 +605,110 @@ async function tryDeviceAuthorization(
 		"device-auth",
 		"allow-non-json-error",
 	);
-	if (!authorized.response.ok) return undefined;
-	return { client, region, device: record(authorized.body, "Invalid Kiro device authorization response") };
-}
-
-export async function loginKiroDevice(ctrl: OAuthLoginCallbacks, config: KiroDeviceConfig): Promise<OAuthCredentials> {
-	const explicitRegion = config.region === undefined ? undefined : validateKiroApiRegion(config.region);
-	if (config.region !== undefined && !explicitRegion) {
-		throw new AIError.OAuthError("Invalid Kiro device region", { kind: "configuration", provider: PROVIDER });
-	}
-	const startUrl = validateStartUrl(config.startUrl ?? BUILDER_ID_START_URL);
-	let authorization: KiroDeviceAuthorization | undefined;
-	for (const region of explicitRegion ? [explicitRegion] : KIRO_SSO_REGIONS) {
-		authorization = await tryDeviceAuthorization(ctrl, config, region, startUrl);
-		if (authorization) break;
-	}
-	if (!authorization) {
-		throw new AIError.OAuthError("No supported AWS region accepted this access portal", {
-			kind: "discovery",
+	if (!authorized.response.ok) {
+		throw new AIError.OAuthError(`Kiro device authorization failed: HTTP ${authorized.response.status}`, {
+			kind: "device-auth",
 			provider: PROVIDER,
+			status: authorized.response.status,
 		});
 	}
-	const { client, region, device } = authorization;
-	const deviceCode = requiredString(device.deviceCode, "deviceCode");
-	const verificationUri = requiredString(device.verificationUriComplete ?? device.verificationUri, "verificationUri");
-	ctrl.onAuth({ url: verificationUri, instructions: `Enter code ${requiredString(device.userCode, "userCode")}` });
+	const device = record(authorized.body, "Invalid Kiro device authorization response");
+	return {
+		client,
+		region,
+		startUrl,
+		deviceCode: requiredString(device.deviceCode, "deviceCode"),
+		userCode: requiredUserCode(device.userCode),
+		verificationUri: validateVerificationUri(device.verificationUri, "verificationUri"),
+		verificationUriComplete: validateVerificationUri(device.verificationUriComplete, "verificationUriComplete"),
+		expiresIn: positiveNumber(device.expiresIn, "expiresIn"),
+		interval: positiveNumber(device.interval, "interval"),
+	};
+}
+
+export async function loginKiroDevice(
+	ctrl: OAuthLoginCallbacks,
+	config: KiroDeviceConfig = {},
+): Promise<OAuthCredentials> {
+	const { startUrl, region } = await resolveDeviceInputs(ctrl, config);
 	throwIfKiroLoginCancelled(ctrl.signal);
-	const expiresMs = positiveNumber(device.expiresIn, "expiresIn") * 1000;
-	const intervalMs = config.pollIntervalMs ?? positiveNumber(device.interval, "interval") * 1000;
+	const client = await getRegisteredClient(ctrl, region);
+	const authorization = await startDeviceAuthorization(ctrl, client, region, startUrl);
+	ctrl.onAuth({
+		url: authorization.verificationUriComplete,
+		instructions: `Confirm the following code in the browser\nCode: ${authorization.userCode}\nOpen this URL: ${authorization.verificationUriComplete}`,
+	});
+	throwIfKiroLoginCancelled(ctrl.signal);
+	ctrl.onProgress?.("Logging in...");
 	const completed = await pollOAuthDeviceCodeFlow<OAuthCredentials>({
 		poll: async () => {
-			const polled = await request(
-				client.tokenEndpoint,
-				{
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({
-						grantType: DEVICE_CODE_GRANT,
-						deviceCode,
-						clientId: client.clientId,
-						clientSecret: client.clientSecret,
-					}),
-				},
-				{ fetch: ctrl.fetch, signal: ctrl.signal },
-				"polling",
-			);
+			let polled: { response: Response; body: unknown };
+			try {
+				polled = await request(
+					authorization.client.tokenEndpoint,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							clientId: authorization.client.clientId,
+							clientSecret: authorization.client.clientSecret,
+							deviceCode: authorization.deviceCode,
+							grantType: DEVICE_CODE_GRANT,
+						}),
+					},
+					{ fetch: ctrl.fetch, signal: ctrl.signal },
+					"polling",
+				);
+			} catch (cause) {
+				if (cause instanceof AIError.OAuthError && cause.kind === "timeout") {
+					return { status: "pending" as const };
+				}
+				throw cause;
+			}
 			const pollBody = record(polled.body, "Invalid Kiro polling response");
 			if (pollBody.error === "authorization_pending") return { status: "pending" as const };
 			if (pollBody.error === "slow_down") return { status: "slow_down" as const };
-			if (!polled.response.ok || pollBody.error) {
-				throw new AIError.OAuthError(
-					`Kiro device authorization rejected: ${String(pollBody.error ?? polled.response.status)}`,
-					{
-						kind: "device-auth",
-						provider: PROVIDER,
-						status: polled.response.status,
-					},
-				);
+			if (!polled.response.ok || pollBody.error !== undefined) {
+				throw new AIError.OAuthError("Kiro device authorization rejected", {
+					kind: "device-auth",
+					provider: PROVIDER,
+					status: polled.response.status,
+				});
 			}
 			return { status: "complete" as const, value: credentials(pollBody) };
 		},
-		intervalSeconds: intervalMs / 1000,
-		expiresInSeconds: expiresMs / 1000,
+		intervalSeconds: authorization.interval,
+		expiresInSeconds: authorization.expiresIn,
+		waitBeforeFirstPoll: true,
 		signal: ctrl.signal,
+		sleep: ctrl.sleep,
 	});
 	throwIfKiroLoginCancelled(ctrl.signal);
-	const selected = await selectKiroProfile(completed.access, resolveKiroApiRegion(region), {
+	const selected = await selectKiroProfileFromBootstrapRegions(completed.access, {
 		fetch: ctrl.fetch,
 		signal: ctrl.signal,
 		onPrompt: ctrl.onPrompt,
 	});
 	throwIfKiroLoginCancelled(ctrl.signal);
+	const parsedProfile = parseKiroProfileArn(selected.profileArn);
+	if (!parsedProfile) {
+		throw new AIError.OAuthError("Kiro profile routing is invalid", { kind: "validation", provider: PROVIDER });
+	}
 	return {
 		...completed,
+		apiEndpoint: kiroRuntimeBaseUrl(parsedProfile.apiRegion),
 		kiroClientId: client.clientId,
 		kiroClientSecret: client.clientSecret,
 		kiroClientSecretExpiresAt: client.clientSecretExpiresAt,
 		kiroTokenEndpoint: client.tokenEndpoint,
 		kiroAuthMethod: "device",
+		kiroRegistrationVersion: KIRO_REGISTRATION_VERSION,
+		kiroStartUrl: startUrl,
+		kiroOidcRegion: region,
+		kiroScopes: [...KIRO_IDENTITY_CENTER_SCOPES],
+		kiroAccountType: "iam-identity-center",
+		kiroProfileArn: selected.profileArn,
+		kiroRuntimeRegion: parsedProfile.apiRegion,
 		orgId: selected.profileArn,
 		orgName: selected.profileName,
 	};
@@ -643,13 +718,18 @@ export async function refreshKiroToken(
 	current: OAuthCredentials,
 	options: KiroRequestOptions = {},
 ): Promise<OAuthCredentials> {
-	const endpoint = current.kiroTokenEndpoint;
-	const method = current.kiroAuthMethod;
-	if (!endpoint || !method) {
+	if (current.expires > Date.now() + KIRO_REFRESH_MARGIN_MS) return current;
+	if (current.kiroAuthMethod !== "device") {
+		throw new AIError.OAuthError("Kiro refresh state is not an IAM Identity Center device credential", {
+			kind: "configuration",
+			provider: PROVIDER,
+		});
+	}
+	if (!current.kiroTokenEndpoint || !current.kiroClientId || !current.kiroClientSecret) {
 		throw new AIError.OAuthError("Kiro refresh state is incomplete", { kind: "configuration", provider: PROVIDER });
 	}
-	if (!current.kiroClientId || !current.kiroClientSecret) {
-		throw new AIError.OAuthError("Kiro refresh requires registered-client credentials", {
+	if (!current.refresh) {
+		throw new AIError.OAuthError("Kiro refresh requires a refresh token", {
 			kind: "configuration",
 			provider: PROVIDER,
 		});
@@ -666,7 +746,7 @@ export async function refreshKiroToken(
 	}
 	let parsed: URL;
 	try {
-		parsed = new URL(endpoint);
+		parsed = new URL(current.kiroTokenEndpoint);
 	} catch (cause) {
 		throw new AIError.OAuthError("Invalid Kiro refresh endpoint", {
 			kind: "configuration",
@@ -686,8 +766,14 @@ export async function refreshKiroToken(
 	) {
 		throw new AIError.OAuthError("Invalid Kiro refresh endpoint", { kind: "configuration", provider: PROVIDER });
 	}
+	if (current.kiroOidcRegion && parsed.hostname !== `oidc.${current.kiroOidcRegion}.amazonaws.com`) {
+		throw new AIError.OAuthError("Kiro refresh endpoint does not match the credential Region", {
+			kind: "configuration",
+			provider: PROVIDER,
+		});
+	}
 	const response = await request(
-		endpoint,
+		current.kiroTokenEndpoint,
 		{
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -709,13 +795,12 @@ export async function refreshKiroToken(
 		});
 	}
 	return {
+		...current,
 		...credentials(response.body, current.refresh),
 		kiroClientId: current.kiroClientId,
 		kiroClientSecret: current.kiroClientSecret,
 		kiroClientSecretExpiresAt: current.kiroClientSecretExpiresAt,
-		kiroTokenEndpoint: endpoint,
-		kiroAuthMethod: method,
-		orgId: current.orgId,
-		orgName: current.orgName,
+		kiroTokenEndpoint: current.kiroTokenEndpoint,
+		kiroAuthMethod: "device",
 	};
 }

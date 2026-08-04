@@ -26,6 +26,8 @@ import type {
 	OAuthAuthInfo,
 	OAuthController,
 	OAuthCredentials,
+	OAuthLoginCache,
+	OAuthPrompt,
 	OAuthProvider,
 	OAuthProviderId,
 } from "./registry/oauth/types";
@@ -1170,6 +1172,12 @@ function raceCredentialRefreshWithSignal<T>(
 	});
 }
 
+function optionalStringArraysEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+	if (left === right) return true;
+	if (!left || !right || left.length !== right.length) return false;
+	return left.every((value, index) => value === right[index]);
+}
+
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
@@ -1191,7 +1199,14 @@ function authCredentialEquals(left: AuthCredential, right: AuthCredential): bool
 		left.kiroClientSecret === right.kiroClientSecret &&
 		left.kiroClientSecretExpiresAt === right.kiroClientSecretExpiresAt &&
 		left.kiroTokenEndpoint === right.kiroTokenEndpoint &&
-		left.kiroAuthMethod === right.kiroAuthMethod
+		left.kiroAuthMethod === right.kiroAuthMethod &&
+		left.kiroRegistrationVersion === right.kiroRegistrationVersion &&
+		left.kiroStartUrl === right.kiroStartUrl &&
+		left.kiroOidcRegion === right.kiroOidcRegion &&
+		optionalStringArraysEqual(left.kiroScopes, right.kiroScopes) &&
+		left.kiroAccountType === right.kiroAccountType &&
+		left.kiroProfileArn === right.kiroProfileArn &&
+		left.kiroRuntimeRegion === right.kiroRuntimeRegion
 	);
 }
 
@@ -2869,7 +2884,7 @@ export class AuthStorage {
 			/** onAuth is required by auth-storage but optional in OAuthController */
 			onAuth: (info: OAuthAuthInfo) => void;
 			/** onPrompt is required for some providers (github-copilot, openai-codex) */
-			onPrompt: (prompt: { message: string; placeholder?: string }) => Promise<string>;
+			onPrompt: (prompt: OAuthPrompt) => Promise<string>;
 		},
 	): Promise<OAuthLoginIdentity | undefined> {
 		// Only paste-code providers (fixed non-loopback redirect, e.g. GitLab Duo
@@ -2895,6 +2910,11 @@ export class AuthStorage {
 			onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
 			signal: ctrl.signal,
 			fetch: ctrl.fetch,
+			cache: {
+				get: (key, options) => this.#store.getCache(key, options),
+				set: (key, value, expiresAtSec) => this.#store.setCache(key, value, expiresAtSec),
+			} satisfies OAuthLoginCache,
+			sleep: ctrl.sleep,
 		});
 		const storeProvider = def.storeCredentialsAs ?? provider;
 		const replace = def.credentialPolicy === "replace";
@@ -2937,6 +2957,7 @@ export class AuthStorage {
 			// shadow the new OAuth row, while preserving other active OAuth credentials.
 			await this.#upsertOAuthCredential(storeProvider, newCredential);
 		}
+		if (storeProvider === "kiro") ctrl.onProgress?.("Logged in");
 		return {
 			type: "oauth",
 			email: newCredential.email,
@@ -3140,6 +3161,7 @@ export class AuthStorage {
 		const entry = this.#getStoredCredentials(provider).find(candidate => candidate.id === credentialId);
 		if (entry?.credential.type !== "oauth") return;
 		this.#replaceCredentialById(provider, credentialId, {
+			...entry.credential,
 			type: "oauth",
 			access: next.accessToken ?? entry.credential.access,
 			refresh: next.refreshToken ?? entry.credential.refresh,
@@ -5176,6 +5198,8 @@ export class AuthStorage {
 			}
 			if (!result) return undefined;
 			const updated: OAuthCredential = {
+				...selection.credential,
+				...result.newCredentials,
 				type: "oauth",
 				access: result.newCredentials.access,
 				refresh: result.newCredentials.refresh,
@@ -6513,6 +6537,8 @@ export class AuthStorage {
 				throw error;
 			}
 			const updated: OAuthCredential = {
+				...attempted,
+				...refreshed,
 				type: "oauth",
 				access: refreshed.access,
 				refresh: refreshed.refresh,

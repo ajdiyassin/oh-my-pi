@@ -79,7 +79,7 @@ export class LoginDialogComponent extends Container {
 	 * `code_challenge_method=S256`). Every physical URL row carries its own OSC 8
 	 * link to the full URL, so clicking any wrapped fragment opens the same target.
 	 */
-	showAuth(url: string, instructions?: string, launchUrl?: string): void {
+	showAuth(url: string, instructions?: string, launchUrl?: string, openBrowser = true): void {
 		this.#contentContainer.clear();
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(
@@ -108,8 +108,9 @@ export class LoginDialogComponent extends Container {
 			this.#contentContainer.addChild(new Text(theme.fg("warning", instructions), 1, 0));
 		}
 
-		// Open browser (best-effort)
-		openPath(url);
+		// Open browser (best-effort) unless the provider explicitly requires a
+		// headless/copy-only device flow.
+		if (openBrowser) openPath(url);
 
 		this.#tui.requestRender();
 	}
@@ -140,7 +141,7 @@ export class LoginDialogComponent extends Container {
 	 * Called by onPrompt callback - show prompt and wait for input
 	 * Note: Does NOT clear content, appends to existing (preserves URL from showAuth)
 	 */
-	showPrompt(message: string, placeholder?: string): Promise<string> {
+	showPrompt(message: string, placeholder?: string, defaultValue?: string): Promise<string> {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("text", message), 1, 0));
 		if (placeholder) {
@@ -151,7 +152,7 @@ export class LoginDialogComponent extends Container {
 		}
 		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel, Enter to submit)"), 1, 0));
 
-		this.#input.setValue("");
+		this.#input.setValue(defaultValue ?? "");
 		this.#tui.requestRender();
 
 		const { promise, resolve, reject } = Promise.withResolvers<string>();
