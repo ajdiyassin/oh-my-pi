@@ -5,6 +5,7 @@ import {
 	buildRedactionMap,
 	collectUnreportedAccounts,
 	computeProviderWindowStats,
+	filterActionableDisabledCredentials,
 	formatUsageBreakdown,
 	formatUsageHistory,
 	type UsageAccountIdentity,
@@ -380,6 +381,123 @@ describe("formatUsageBreakdown", () => {
 		const text = stripVTControlCharacters(formatUsageBreakdown([], activeAccounts, now, undefined, disabled));
 		expect(text).not.toContain("active@example.test — disabled");
 		expect(text).toContain("✗ truly-dead@example.test — disabled");
+	});
+
+	it("uses org as a gate for text and JSON tombstone identity matching", () => {
+		const now = Date.now();
+		const activeAccounts: UsageAccountIdentity[] = [
+			{
+				provider: "anthropic",
+				type: "oauth",
+				email: " SHARED@example.test ",
+				orgId: " ORG-B ",
+			},
+			{
+				provider: "anthropic",
+				type: "oauth",
+				accountId: " SHARED-ACCOUNT ",
+				orgId: " ORG-B ",
+			},
+			{
+				provider: "anthropic",
+				type: "oauth",
+				email: " ALICE@example.test ",
+				accountId: " ACCOUNT-ALICE ",
+				orgId: " ORG-TEAM ",
+			},
+			{
+				provider: "anthropic",
+				type: "oauth",
+				orgId: "org-only",
+			},
+			{
+				provider: "anthropic",
+				type: "oauth",
+				email: "member@example.test",
+				orgId: "org-mixed",
+			},
+			{
+				provider: "anthropic",
+				type: "api_key",
+				email: "api-key@example.test",
+			},
+		];
+		const disabled = [
+			{
+				id: 40,
+				provider: "anthropic",
+				type: "oauth" as const,
+				email: "shared@example.test",
+				orgId: "org-a",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+			{
+				id: 41,
+				provider: "anthropic",
+				type: "oauth" as const,
+				accountId: "shared-account",
+				orgId: "org-a",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+			{
+				id: 42,
+				provider: "anthropic",
+				type: "oauth" as const,
+				email: "bob@example.test",
+				accountId: "account-bob",
+				orgId: "org-team",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+			{
+				id: 43,
+				provider: "anthropic",
+				type: "oauth" as const,
+				email: "alice@example.test",
+				accountId: "account-alice",
+				orgId: "org-team",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+			{
+				id: 44,
+				provider: "anthropic",
+				type: "oauth" as const,
+				orgId: "org-only",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+			{
+				id: 45,
+				provider: "anthropic",
+				type: "oauth" as const,
+				orgId: "org-mixed",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+			{
+				id: 46,
+				provider: "anthropic",
+				type: "oauth" as const,
+				email: "api-key@example.test",
+				cause: "oauth refresh failed: Refresh token expired",
+			},
+		];
+
+		const text = stripVTControlCharacters(formatUsageBreakdown([], activeAccounts, now, undefined, disabled));
+		// Matching email/accountId in another org must not suppress a tombstone.
+		expect(text).toContain("✗ shared@example.test · org-a — disabled");
+		expect(text).toContain("✗ shared-account · org-a — disabled");
+		// A shared org is not enough to identify a different Team member.
+		expect(text).toContain("✗ bob@example.test · org-team — disabled");
+		// Same-org matching base identity is suppressed.
+		expect(text).not.toContain("alice@example.test · org-team — disabled");
+		// Org-only identities still match each other, but not an org-scoped member.
+		expect(text).not.toContain("OAuth account · org-only — disabled");
+		expect(text).toContain("✗ OAuth account · org-mixed — disabled");
+		// An API-key active row cannot suppress an OAuth tombstone.
+		expect(text).toContain("✗ api-key@example.test — disabled");
+
+		// The JSON producer uses the same public predicate as the text renderer.
+		expect(filterActionableDisabledCredentials(disabled, activeAccounts).map(summary => summary.id)).toEqual([
+			40, 41, 42, 45, 46,
+		]);
 	});
 
 	it("renders a tombstone-only provider section even when no active credential remains", () => {

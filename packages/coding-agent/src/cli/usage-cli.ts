@@ -555,39 +555,62 @@ function formatReloginDeadline(
 	return `  ${chalk.yellow(`⚠ ${label} — re-login within ${formatDuration(remaining)} (Anthropic expires OAuth grants ~30d after login)`)}`;
 }
 
+/** Normalize identity fields before comparing credentials from different storage surfaces. */
+function normalizeIdentityValue(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
+}
+
 /**
  * Tombstones worth a row in `omp usage`: OAuth credentials torn down
  * automatically (refresh failure, upstream invalidation). Rows the user
  * replaced or deleted deliberately are lifecycle noise, not lost capacity.
+ *
+ * Organization is a gate, not a replacement identity. A same-org account
+ * still needs a matching email/account id, while genuinely org-only rows can
+ * match one another on the organization alone.
  */
 function isActionableDisable(summary: DisabledCredentialSummary, activeAccounts: UsageAccountIdentity[] = []): boolean {
 	if (summary.type !== "oauth") return false;
 	if (/^(replaced by|deleted by user)/i.test(summary.cause)) return false;
 
-	// Do not display tombstone if there is an active account for the same provider
-	// matching the same identity (email, accountId, or org).
-	const summaryEmail = summary.email?.toLowerCase();
-	const summaryAccountId = summary.accountId?.toLowerCase();
-	const summaryOrgId = summary.orgId?.toLowerCase();
+	const summaryEmail = normalizeIdentityValue(summary.email);
+	const summaryAccountId = normalizeIdentityValue(summary.accountId);
+	const summaryOrgId = normalizeIdentityValue(summary.orgId);
+	const summaryHasBaseIdentity = summaryEmail !== undefined || summaryAccountId !== undefined;
 
 	const matchesActive = activeAccounts.some(account => {
-		if (account.provider !== summary.provider) return false;
+		if (account.type !== "oauth" || account.provider !== summary.provider) return false;
 
-		const accountEmail = account.email?.toLowerCase();
-		const accountAccountId = account.accountId?.toLowerCase();
-		const accountOrgId = account.orgId?.toLowerCase();
+		const accountEmail = normalizeIdentityValue(account.email);
+		const accountAccountId = normalizeIdentityValue(account.accountId);
+		const accountProjectId = normalizeIdentityValue(account.projectId);
+		const accountOrgId = normalizeIdentityValue(account.orgId);
+		const accountHasBaseIdentity =
+			accountEmail !== undefined || accountAccountId !== undefined || accountProjectId !== undefined;
+		const hasOrgIdentity = summaryOrgId !== undefined || accountOrgId !== undefined;
 
-		// If email or accountId match, it's the same identity
-		if (summaryEmail && accountEmail && summaryEmail === accountEmail) return true;
-		if (summaryAccountId && accountAccountId && summaryAccountId === accountAccountId) return true;
+		// If either side carries an org, both sides must carry the same org.
+		if (hasOrgIdentity && summaryOrgId !== accountOrgId) return false;
 
-		// Fallback: if orgId matches and neither email nor accountId contradicts
-		if (summaryOrgId && accountOrgId && summaryOrgId === accountOrgId) return true;
+		const matchesBaseIdentity =
+			(summaryEmail !== undefined && summaryEmail === accountEmail) ||
+			(summaryAccountId !== undefined && summaryAccountId === accountAccountId);
+		if (matchesBaseIdentity) return true;
 
-		return false;
+		// An organization is sufficient only when both records are genuinely
+		// org-only. It must never collapse distinct members sharing an org.
+		return hasOrgIdentity && !summaryHasBaseIdentity && !accountHasBaseIdentity;
 	});
 
 	return !matchesActive;
+}
+
+/** Disabled tombstones that remain actionable after active-account matching. */
+export function filterActionableDisabledCredentials(
+	summaries: DisabledCredentialSummary[],
+	activeAccounts: UsageAccountIdentity[] = [],
+): DisabledCredentialSummary[] {
+	return summaries.filter(summary => isActionableDisable(summary, activeAccounts));
 }
 
 /** Human-sized disable cause: the upstream `error_description` when embedded, else the first clause. */
@@ -634,8 +657,7 @@ export function formatUsageBreakdown(
 		unreportedByProvider.set(account.provider, list);
 	}
 	const disabledByProvider = new Map<string, DisabledCredentialSummary[]>();
-	for (const summary of disabled) {
-		if (!isActionableDisable(summary, accounts)) continue;
+	for (const summary of filterActionableDisabledCredentials(disabled, accounts)) {
 		const list = disabledByProvider.get(summary.provider) ?? [];
 		list.push(summary);
 		disabledByProvider.set(summary.provider, list);
@@ -1043,7 +1065,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				const stats = computeProviderWindowStats(filteredReports.filter(peer => peer.provider === report.provider));
 				if (stats.length > 0) capacity[report.provider] = stats;
 			}
-			let disabledForJson = disabled.filter(summary => isActionableDisable(summary, accounts));
+			let disabledForJson = filterActionableDisabledCredentials(disabled, accounts);
 			if (redaction) {
 				disabledForJson = disabledForJson.map(summary => ({
 					...summary,
