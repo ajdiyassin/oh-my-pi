@@ -17,7 +17,7 @@ import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import { discoverAndLoadExtensions, drainPendingProviderRegistrations, ExtensionRunner, emitSessionShutdownEvent } from "../extensibility/extensions";
+import { discoverAndLoadExtensions, ExtensionRunner, emitSessionShutdownEvent } from "../extensibility/extensions";
 import { discoverAuthStorage } from "../sdk";
 import { SessionManager } from "../session/session-manager";
 import { EventBus } from "../utils/event-bus";
@@ -328,7 +328,10 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 		for (const sourceId of new Set(activeSources)) {
 			modelRegistry.clearSourceRegistrations(sourceId);
 		}
-		drainPendingProviderRegistrations(extensionsResult.runtime, modelRegistry);
+		for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
+			modelRegistry.registerProvider(name, config, sourceId);
+		}
+		extensionsResult.runtime.pendingProviderRegistrations = [];
 		// Discover runtime (extension) provider catalogs now that they are registered.
 		await modelRegistry.refreshRuntimeProviders(action === "refresh" ? "online" : "online-if-uncached");
 

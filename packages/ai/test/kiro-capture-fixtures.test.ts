@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { decodeEventStream } from "@oh-my-pi/pi-ai/providers/aws-eventstream";
 import { normalizeKiroFrame } from "@oh-my-pi/pi-ai/providers/kiro/index";
-import {
-	createSanitizedKiroStream,
-	SANITIZED_KIRO_STREAM_FRAMES,
-} from "./fixtures/kiro/stream-contracts";
+import { createSanitizedKiroStream, SANITIZED_KIRO_STREAM_FRAMES } from "./fixtures/kiro/stream-contracts";
 
 describe("sanitized Kiro stream evidence", () => {
 	test("replays observed frames through the production decoder and normalizer", async () => {

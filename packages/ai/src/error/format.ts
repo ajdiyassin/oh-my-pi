@@ -33,9 +33,10 @@ export interface FormatMessageOptions {
  * {@link formatErrorMessageWithRetryAfter} is used.
  */
 export async function formatMessage(error: unknown, opts: FormatMessageOptions = {}): Promise<string> {
-	let message = opts.rawRequestDump || opts.capturedErrorResponse
-		? await finalizeErrorMessage(error, opts.rawRequestDump, opts.capturedErrorResponse)
-		: formatErrorMessageWithRetryAfter(error);
+	let message =
+		opts.rawRequestDump || opts.capturedErrorResponse
+			? await finalizeErrorMessage(error, opts.rawRequestDump, opts.capturedErrorResponse)
+			: formatErrorMessageWithRetryAfter(error);
 	if (opts.provider === "github-copilot") {
 		message = rewriteCopilotError(message, error, opts.provider);
 	}

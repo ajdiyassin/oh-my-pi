@@ -29,7 +29,7 @@ import { isKiroCapacityError, KiroApiError, KiroStreamError, kiroHttpError } fro
 import { mergeKiroUsage, normalizeKiroFrame } from "./event-normalizer";
 import { KiroToolAssembler } from "./tool-assembler";
 import { transformKiroRequest } from "./transform";
-import type { KiroOptions, KiroStreamCredential, KiroUsageMetrics } from "./types";
+import type { KiroNormalizedEvent, KiroOptions, KiroStreamCredential, KiroUsageMetrics } from "./types";
 
 const KIRO_RUNTIME_TARGET = "KiroRuntimeService.GenerateAssistantResponse";
 const KIRO_USER_AGENT = "oh-my-pi/kiro-api";
@@ -452,14 +452,15 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 					}
 					throw error;
 				}
-				if (!response.body) {
+				const responseBody = response.body;
+				if (!responseBody) {
 					throw new KiroStreamError("Kiro response has no body", { code: "EMPTY_BODY", kind: "empty-body" });
 				}
 				state.output.responseId = headerRequestId ?? undefined;
 				const readAbort = new AbortController();
 				const readSignal = options.signal ? AbortSignal.any([options.signal, readAbort.signal]) : readAbort.signal;
 				const normalizedFrames = (async function* () {
-					for await (const frame of decodeEventStream(response.body, readSignal)) {
+					for await (const frame of decodeEventStream(responseBody, readSignal)) {
 						yield normalizeKiroFrame(frame);
 					}
 				})();
@@ -472,11 +473,12 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 					onFirstItemTimeout: () => readAbort.abort(),
 					abortSignal: options.signal,
 					isProgressItem: event => {
-						switch (event.type) {
+						const normalizedEvent = event as KiroNormalizedEvent;
+						switch (normalizedEvent.type) {
 							case "reasoning":
-								return Boolean(event.text);
+								return Boolean(normalizedEvent.text);
 							case "content":
-								return isInlineContentProgress(state, event.content);
+								return isInlineContentProgress(state, normalizedEvent.content);
 							case "tool":
 								return true;
 							default:

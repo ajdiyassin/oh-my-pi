@@ -111,6 +111,7 @@ describe("AuthStorage api-key login upsert", () => {
 			apiEndpoint,
 			source: "login",
 		});
+		await authStorage.reload();
 
 		const expected = JSON.stringify({ token: "kiro-login-key", apiEndpoint });
 		expect(await authStorage.getApiKey("kiro", "session-kiro-route")).toBe(expected);

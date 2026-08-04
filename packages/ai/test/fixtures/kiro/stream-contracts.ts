@@ -47,10 +47,7 @@ function encodeStringHeader(name: string, value: string): Uint8Array {
 }
 
 export function encodeSanitizedKiroEvent(frame: SanitizedKiroStreamFrame): Uint8Array {
-	const headers = [
-		encodeStringHeader(":message-type", "event"),
-		encodeStringHeader(":event-type", frame.eventType),
-	];
+	const headers = [encodeStringHeader(":message-type", "event"), encodeStringHeader(":event-type", frame.eventType)];
 	const headerLength = headers.reduce((total, header) => total + header.length, 0);
 	const headerBytes = new Uint8Array(headerLength);
 	let headerOffset = 0;

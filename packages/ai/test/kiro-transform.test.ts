@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { transformKiroRequest } from "@oh-my-pi/pi-ai/providers/kiro/index";
 import type { AssistantMessage, Context, Model, Tool, Usage } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { type } from "arktype";
 
 const lookupParameters = type({ path: "string" });
 const lookupTool: Tool<typeof lookupParameters> = {

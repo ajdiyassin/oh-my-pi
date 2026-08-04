@@ -1,9 +1,6 @@
 import { kiroManagementRequest } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
-import {
-	extractKiroProfileSegment,
-	parseKiroProfileArn,
-} from "@oh-my-pi/pi-catalog/wire/kiro";
+import { extractKiroProfileSegment, parseKiroProfileArn } from "@oh-my-pi/pi-catalog/wire/kiro";
 import type {
 	UsageAmount,
 	UsageFetchContext,

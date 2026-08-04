@@ -114,11 +114,7 @@ export function normalizeKiroFrame(message: EventStreamMessage): KiroNormalizedE
 			throw kiroEventStreamError(message.headers, { code: "MALFORMED_TOOL_INPUT" });
 		}
 		const input =
-			typeof payload.input === "string"
-				? payload.input
-				: isRecord(payload.input)
-					? payload.input
-					: undefined;
+			typeof payload.input === "string" ? payload.input : isRecord(payload.input) ? payload.input : undefined;
 		return {
 			type: "tool",
 			toolUseId: payload.toolUseId,
