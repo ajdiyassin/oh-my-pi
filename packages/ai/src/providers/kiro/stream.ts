@@ -240,6 +240,38 @@ function closeText(state: AttemptState, stream: AssistantMessageEventStream): vo
 	state.textIndex = undefined;
 }
 
+function hasVisibleInlineText(value: string): boolean {
+	return value.trim().length > 0;
+}
+
+function isInlineContentProgress(state: AttemptState, chunk: string): boolean {
+	if (!hasVisibleInlineText(chunk)) return false;
+	if (state.nativeReasoning || state.inlineMode === "text") return true;
+
+	let buffer = state.inlineBuffer + chunk;
+	let close = state.inlineClose;
+	if (state.inlineMode === "undecided") {
+		const match = INLINE_THINKING_TAGS.find(([open]) => buffer.startsWith(open));
+		if (match) {
+			close = match[1];
+			buffer = buffer.slice(match[0].length);
+		} else if (INLINE_THINKING_TAGS.some(([open]) => open.startsWith(buffer))) {
+			return false;
+		} else {
+			return true;
+		}
+	}
+
+	if (!close) return true;
+	const end = buffer.indexOf(close);
+	if (end < 0) {
+		const safeLength = Math.max(0, buffer.length - close.length + 1);
+		return hasVisibleInlineText(buffer.slice(0, safeLength));
+	}
+	const remainder = buffer.slice(end + close.length).replace(/^\n\n/, "");
+	return hasVisibleInlineText(buffer.slice(0, end)) || hasVisibleInlineText(remainder);
+}
+
 function processInlineContent(state: AttemptState, stream: AssistantMessageEventStream, chunk: string): void {
 	if (state.nativeReasoning || state.inlineMode === "text") {
 		closeThinking(state, stream);
@@ -443,18 +475,8 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 						switch (event.type) {
 							case "reasoning":
 								return Boolean(event.text);
-							case "content": {
-								const trimmed = event.content.trim();
-								if (!trimmed) return false;
-								const tagOnly = INLINE_THINKING_TAGS.some(([open, close]) => {
-									if (open.startsWith(trimmed)) return true;
-									return (
-										trimmed.includes(open) &&
-										trimmed.replaceAll(open, "").replaceAll(close, "").trim().length === 0
-									);
-								});
-								return !tagOnly;
-							}
+							case "content":
+								return isInlineContentProgress(state, event.content);
 							case "tool":
 								return true;
 							default:

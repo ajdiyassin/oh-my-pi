@@ -494,6 +494,42 @@ describe("Kiro stream transport", () => {
 		expect(aborted.stopReason).toBe("aborted");
 	});
 
+	test("does not treat partial inline thinking content as visible output", async () => {
+		const blockedBody = Promise.withResolvers<void>();
+		const partialThinkingBytes = concatFrames([
+			encodeEventFrame("assistantResponseEvent", { content: "<thinking>foo" }),
+		]);
+		const bodyResponse = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(partialThinkingBytes);
+				},
+				pull() {
+					return blockedBody.promise;
+				},
+				cancel() {
+					blockedBody.resolve();
+				},
+			}),
+			{ status: 200, headers: { "content-type": "application/vnd.amazon.eventstream" } },
+		);
+
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => bodyResponse,
+			streamFirstEventTimeoutMs: 20,
+			streamIdleTimeoutMs: 40,
+			providerRetryWait: async () => {
+				throw new Error("partial thinking timeout must not retry");
+			},
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("first visible output");
+		expect(AIError.is(result.errorId, AIError.Flag.Timeout)).toBe(true);
+		blockedBody.resolve();
+	});
+
 	test("retries once after a clean no-output response before visible output", async () => {
 		let attempts = 0;
 		const waits: number[] = [];
