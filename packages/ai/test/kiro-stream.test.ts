@@ -301,7 +301,7 @@ describe("Kiro stream transport", () => {
 		expect(profileRequests).toEqual([EU_RUNTIME_ENDPOINT]);
 	});
 
-	test("reports a local first-event timeout and caller abort distinctly", async () => {
+	test("reports transport and semantic first-visible-output timeouts distinctly from caller abort", async () => {
 		const timeoutFetch: FetchImpl = async (_input, init) => {
 			const { promise, reject } = Promise.withResolvers<Response>();
 			const signal = init?.signal;
@@ -319,6 +319,40 @@ describe("Kiro stream transport", () => {
 		expect(timedOut.stopReason).toBe("error");
 		expect(timedOut.errorMessage).toMatch(/timed out|timeout/i);
 
+		const blockedBody = Promise.withResolvers<void>();
+		const metadataBytes = concatFrames([encodeEventFrame("initial-response", { requestId: "metadata-only" })]);
+		const bodyResponse = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(metadataBytes);
+				},
+				pull() {
+					return blockedBody.promise;
+				},
+				cancel() {
+					blockedBody.resolve();
+				},
+			}),
+			{ status: 200, headers: { "content-type": "application/vnd.amazon.eventstream" } },
+		);
+		let bodyFetchCalls = 0;
+		const bodyTimeout = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => {
+				bodyFetchCalls += 1;
+				return bodyResponse;
+			},
+			streamFirstEventTimeoutMs: 20,
+			streamIdleTimeoutMs: 1_000,
+			providerRetryWait: async () => {
+				throw new Error("semantic timeout must not retry");
+			},
+		}).result();
+		expect(bodyTimeout.stopReason).toBe("error");
+		expect(bodyTimeout.errorMessage).toContain("first visible output");
+		expect(AIError.is(bodyTimeout.errorId, AIError.Flag.Timeout)).toBe(true);
+		expect(bodyFetchCalls).toBe(1);
+
 		const controller = new AbortController();
 		controller.abort(new DOMException("caller cancelled", "AbortError"));
 		const aborted = await streamKiro(createModel(), TEST_CONTEXT, {
@@ -327,6 +361,79 @@ describe("Kiro stream transport", () => {
 			signal: controller.signal,
 		}).result();
 		expect(aborted.stopReason).toBe("aborted");
+	});
+
+	test("retries once after a clean no-output response before visible output", async () => {
+		let attempts = 0;
+		const waits: number[] = [];
+		const fetch: FetchImpl = async () => {
+			attempts += 1;
+			return attempts === 1
+				? responseForEvents([["initial-response", { requestId: "no-output" }]])
+				: responseForEvents([["assistantResponseEvent", { content: "recovered" }]]);
+		};
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch,
+			providerRetryWait: async delay => {
+				waits.push(delay);
+			},
+		}).result();
+
+		expect(attempts).toBe(2);
+		expect(waits).toEqual([500]);
+		expect(result.stopReason).toBe("stop");
+		expect(result.content).toContainEqual({ type: "text", text: "recovered" });
+	});
+
+	test("caps clean no-output recovery after one retry", async () => {
+		let attempts = 0;
+		const waits: number[] = [];
+		const fetch: FetchImpl = async () => {
+			attempts += 1;
+			return responseForEvents([["initial-response", { requestId: `no-output-${attempts}` }]]);
+		};
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch,
+			providerRetryWait: async delay => {
+				waits.push(delay);
+			},
+		}).result();
+
+		expect(attempts).toBe(2);
+		expect(waits).toEqual([500]);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("ended without visible output");
+	});
+
+	test("does not replay a stream failure after visible output", async () => {
+		let attempts = 0;
+		const waits: number[] = [];
+		const fetch: FetchImpl = async () => {
+			attempts += 1;
+			const body = concatFrames([
+				encodeEventFrame("assistantResponseEvent", { content: "visible before failure" }),
+				new Uint8Array([0, 0, 0, 20]),
+			]);
+			return new Response(streamFrom([body]), {
+				status: 200,
+				headers: { "content-type": "application/vnd.amazon.eventstream" },
+			});
+		};
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch,
+			providerRetryWait: async delay => {
+				waits.push(delay);
+			},
+		}).result();
+
+		expect(attempts).toBe(1);
+		expect(waits).toEqual([]);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("truncated message");
+		expect(result.content).toContainEqual({ type: "text", text: "visible before failure" });
 	});
 
 	test("dispatches through the public simple-stream API with Kiro headers and request fields", async () => {

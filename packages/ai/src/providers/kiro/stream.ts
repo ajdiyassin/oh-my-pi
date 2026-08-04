@@ -426,18 +426,44 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 				state.output.responseId = headerRequestId ?? undefined;
 				const readAbort = new AbortController();
 				const readSignal = options.signal ? AbortSignal.any([options.signal, readAbort.signal]) : readAbort.signal;
-				const frames = iterateWithIdleTimeout(decodeEventStream(response.body, readSignal), {
+				const normalizedFrames = (async function* () {
+					for await (const frame of decodeEventStream(response.body, readSignal)) {
+						yield normalizeKiroFrame(frame);
+					}
+				})();
+				const frames = iterateWithIdleTimeout(normalizedFrames, {
 					idleTimeoutMs,
 					firstItemTimeoutMs: firstEventTimeoutMs,
 					errorMessage: "Kiro stream timed out while waiting for the next event",
-					firstItemErrorMessage: "Kiro stream timed out while waiting for the first event",
+					firstItemErrorMessage: "Kiro stream timed out while waiting for the first visible output",
 					onIdle: () => readAbort.abort(),
 					onFirstItemTimeout: () => readAbort.abort(),
 					abortSignal: options.signal,
+					isProgressItem: event => {
+						switch (event.type) {
+							case "reasoning":
+								return Boolean(event.text);
+							case "content": {
+								const trimmed = event.content.trim();
+								if (!trimmed) return false;
+								const tagOnly = INLINE_THINKING_TAGS.some(([open, close]) => {
+									if (open.startsWith(trimmed)) return true;
+									return (
+										trimmed.includes(open) &&
+										trimmed.replaceAll(open, "").replaceAll(close, "").trim().length === 0
+									);
+								});
+								return !tagOnly;
+							}
+							case "tool":
+								return true;
+							default:
+								return false;
+						}
+					},
 				});
 				try {
-					for await (const frame of frames) {
-						const event = normalizeKiroFrame(frame);
+					for await (const event of frames) {
 						if (event.type !== "ignored") state.semanticEvents++;
 						switch (event.type) {
 							case "metadata":
