@@ -258,6 +258,86 @@ describe("Kiro stream transport", () => {
 		expect(result.stopReason).toBe("toolUse");
 	});
 
+	test("maps metadata completion and ignores credit-denominated metering telemetry", async () => {
+		const events: Array<[string, unknown]> = [
+			["assistantResponseEvent", { content: "ok" }],
+			["meteringEvent", { unit: "credit", unitPlural: "credits", usage: 0.0386 }],
+			["usageEvent", { usage: { inputTokens: 7, outputTokens: 3 } }],
+			["metadataEvent", { requestId: "metadata-request", stopReason: "MAX_TOKENS" }],
+		];
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => responseForEvents(events),
+		}).result();
+
+		expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+		expect(result.responseId).toBe("metadata-request");
+		expect(result.stopReason).toBe("length");
+		expect(result.usage).toMatchObject({ input: 7, output: 3, totalTokens: 10 });
+	});
+
+	test("ignores unknown event payloads before decoding them", async () => {
+		const unknown = encodeEventFrame("futureKiroEvent", {});
+		unknown.set(new TextEncoder().encode("x"), unknown.length - 5);
+		const view = new DataView(unknown.buffer);
+		view.setUint32(unknown.length - 4, crc32(unknown.subarray(0, unknown.length - 4)), false);
+		const bytes = concatFrames([unknown, encodeEventFrame("assistantResponseEvent", { content: "after unknown" })]);
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () =>
+				new Response(streamFrom([bytes]), {
+					status: 200,
+					headers: { "content-type": "application/vnd.amazon.eventstream" },
+				}),
+		}).result();
+
+		expect(result.content).toEqual([{ type: "text", text: "after unknown" }]);
+		expect(result.stopReason).toBe("stop");
+	});
+
+	test("does not replay malformed tool input after tool visibility begins", async () => {
+		let attempts = 0;
+		const stream = streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => {
+				attempts++;
+				return responseForEvents([
+					["toolUseEvent", { toolUseId: "malformed-tool", name: "write", input: "{", stop: true }],
+				]);
+			},
+		});
+		const emitted: AssistantMessageEvent[] = [];
+		for await (const event of stream) emitted.push(event);
+		const result = await stream.result();
+
+		expect(attempts).toBe(1);
+		expect(emitted.some(event => event.type === "toolcall_start")).toBe(true);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("malformed JSON input");
+	});
+
+	test("does not leak lifecycle events from a discarded metadata-only attempt", async () => {
+		let attempts = 0;
+		const stream = streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: "kiro-token",
+			fetch: async () => {
+				attempts++;
+				return attempts === 1
+					? responseForEvents([["metadataEvent", { requestId: "discarded" }]])
+					: responseForEvents([["assistantResponseEvent", { content: "recovered" }]]);
+			},
+			providerRetryWait: async () => {},
+		});
+		const emitted: AssistantMessageEvent[] = [];
+		for await (const event of stream) emitted.push(event);
+		const result = await stream.result();
+
+		expect(attempts).toBe(2);
+		expect(emitted.filter(event => event.type === "start")).toHaveLength(1);
+		expect(result.responseId).toBeUndefined();
+		expect(result.content).toEqual([{ type: "text", text: "recovered" }]);
+	});
+
 	test("retries one pre-output capacity response", async () => {
 		let attempts = 0;
 		const waits: number[] = [];
