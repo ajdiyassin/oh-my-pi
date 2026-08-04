@@ -1,3 +1,4 @@
+import { isRecord } from "@oh-my-pi/pi-utils";
 import type { KiroDiscoveryCredential } from "../discovery/kiro";
 
 export interface ModelCacheProviderIdOptions {
@@ -10,8 +11,8 @@ export function parseKiroDiscoveryCredential(value: string): KiroDiscoveryCreden
 	const trimmed = value.trim();
 	try {
 		const parsed: unknown = JSON.parse(trimmed);
-		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-			const record = parsed as Record<string, unknown>;
+		if (isRecord(parsed)) {
+			const record = parsed;
 			if (typeof record.token === "string" && record.token.length > 0) {
 				if (typeof record.profileArn === "string" && record.profileArn.length > 0) {
 					return { type: "oauth", token: record.token, profileArn: record.profileArn };

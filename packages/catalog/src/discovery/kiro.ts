@@ -2,6 +2,7 @@
  * Kiro management discovery: bounded AWS JSON 1.0 client, fail-closed
  * sanitizer (additive unknowns tolerated), and schema-derived ModelSpec map.
  */
+import { isRecord } from "@oh-my-pi/pi-utils";
 import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
 import { Effort } from "../effort";
 import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
@@ -110,10 +111,6 @@ export interface FetchKiroModelsOptions {
 
 function failSanitize(code: string): never {
 	throw new Error(`Unsafe ListAvailableModels response: ${code}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function record(value: unknown, code: string): Record<string, unknown> {

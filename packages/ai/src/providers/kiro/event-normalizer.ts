@@ -1,3 +1,4 @@
+import { isRecord } from "@oh-my-pi/pi-utils";
 import type { EventStreamMessage } from "../aws-eventstream";
 import { kiroEventStreamError } from "./errors";
 import type { KiroNormalizedEvent, KiroUsageMetrics } from "./types";
@@ -37,18 +38,11 @@ const KNOWN_EVENT_TYPES: Readonly<Record<string, true>> = {
 	...METRIC_EVENT_TYPES,
 };
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
 function decodePayload(message: EventStreamMessage): Record<string, unknown> {
 	try {
 		const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(message.payload));
-		const parsed = record(value);
-		if (!parsed) throw new Error("payload is not an object");
-		return parsed;
+		if (!isRecord(value)) throw new Error("payload is not an object");
+		return value;
 	} catch (error) {
 		throw kiroEventStreamError(message.headers, {
 			code: "MALFORMED_EVENT_PAYLOAD",
@@ -58,8 +52,8 @@ function decodePayload(message: EventStreamMessage): Record<string, unknown> {
 }
 
 function normalizeMetrics(value: unknown): KiroUsageMetrics | undefined {
-	const source = record(value);
-	if (!source) return undefined;
+	if (!isRecord(value)) return undefined;
+	const source = value;
 	const usage: KiroUsageMetrics = {};
 	for (const [field, aliases] of Object.entries(METRIC_ALIASES) as Array<
 		[keyof KiroUsageMetrics, readonly string[]]
@@ -116,10 +110,15 @@ export function normalizeKiroFrame(message: EventStreamMessage): KiroNormalizedE
 		if (typeof payload.toolUseId !== "string" || payload.toolUseId.length === 0) {
 			throw kiroEventStreamError(message.headers, { code: "MALFORMED_TOOL_EVENT" });
 		}
-		if (payload.input !== undefined && typeof payload.input !== "string" && !record(payload.input)) {
+		if (payload.input !== undefined && typeof payload.input !== "string" && !isRecord(payload.input)) {
 			throw kiroEventStreamError(message.headers, { code: "MALFORMED_TOOL_INPUT" });
 		}
-		const input = typeof payload.input === "string" ? payload.input : record(payload.input);
+		const input =
+			typeof payload.input === "string"
+				? payload.input
+				: isRecord(payload.input)
+					? payload.input
+					: undefined;
 		return {
 			type: "tool",
 			toolUseId: payload.toolUseId,

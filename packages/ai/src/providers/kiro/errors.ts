@@ -1,3 +1,4 @@
+import { isRecord } from "@oh-my-pi/pi-utils";
 import { readBoundedBytes } from "@oh-my-pi/pi-utils/bounded-json";
 import * as AIError from "../../error";
 
@@ -5,12 +6,6 @@ const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_ERROR_MESSAGE_CHARS = 500;
 const MAX_ERROR_CODE_CHARS = 100;
 const MAX_REQUEST_ID_CHARS = 200;
-
-function record(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
-}
 
 function boundedMessage(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
@@ -58,7 +53,8 @@ export async function kiroHttpError(response: Response): Promise<KiroApiError> {
 	const body = await readBoundedBytes(response, MAX_ERROR_BODY_BYTES, { truncate: true });
 	let parsed: Record<string, unknown> | undefined;
 	try {
-		parsed = record(JSON.parse(new TextDecoder().decode(body)));
+		const value: unknown = JSON.parse(new TextDecoder().decode(body));
+		parsed = isRecord(value) ? value : undefined;
 	} catch {}
 	const codeValue = parsed?.__type ?? parsed?.code ?? parsed?.error;
 	const code = boundedIdentifier(
@@ -72,7 +68,7 @@ export async function kiroHttpError(response: Response): Promise<KiroApiError> {
 }
 
 export function kiroEventStreamError(headers: Record<string, string>, payload: unknown): KiroStreamError {
-	const value = record(payload);
+	const value = isRecord(payload) ? payload : undefined;
 	const codeValue = headers[":exception-type"] ?? headers[":error-code"] ?? value?.code ?? value?.__type;
 	const code = boundedIdentifier(codeValue, MAX_ERROR_CODE_CHARS) ?? "KIRO_EVENTSTREAM_ERROR";
 	const requestId = boundedIdentifier(value?.requestId, MAX_REQUEST_ID_CHARS);
