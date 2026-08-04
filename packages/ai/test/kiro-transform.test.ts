@@ -65,6 +65,8 @@ function toolResult(toolCallId: string, isError = false) {
 
 describe("Kiro request transformation", () => {
 	test("serializes images, tools, paired historical tool results, and profile-safe tool ids", () => {
+		const jpegData = "aGVsbG8=";
+		const pngData = "iVBORw0KGgo=";
 		const context: Context = {
 			systemPrompt: ["Follow the system instruction."],
 			messages: [
@@ -75,7 +77,8 @@ describe("Kiro request transformation", () => {
 					role: "user",
 					content: [
 						{ type: "text", text: "Current question" },
-						{ type: "image", data: "aGVsbG8=", mimeType: "image/jpeg" },
+						{ type: "image", data: jpegData, mimeType: "image/jpeg" },
+						{ type: "image", data: pngData, mimeType: "image/png" },
 					],
 					timestamp: 3,
 				},
@@ -92,7 +95,10 @@ describe("Kiro request transformation", () => {
 
 		expect(history[0]?.userInputMessage?.content).toContain("Follow the system instruction.");
 		expect(current.content).toBe("Current question");
-		expect(current.images).toEqual([{ format: "jpeg", source: { bytes: "aGVsbG8=" } }]);
+		expect(current.images).toEqual([
+			{ format: "jpeg", source: { bytes: jpegData } },
+			{ format: "png", source: { bytes: pngData } },
+		]);
 		expect(current.userInputMessageContext?.tools?.[0]?.toolSpecification).toMatchObject({
 			name: "lookup",
 			description: "Look up a path.",
@@ -151,6 +157,22 @@ describe("Kiro request transformation", () => {
 		expect(history.some(entry => entry.userInputMessage?.userInputMessageContext?.toolResults !== undefined)).toBe(
 			false,
 		);
+	});
+
+	test("fails closed for unsupported user image formats", () => {
+		for (const mimeType of ["image/gif", "image/webp", "image/bmp"] as const) {
+			const context: Context = {
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "image", data: "unsupported-image", mimeType }],
+						timestamp: 0,
+					},
+				],
+			};
+
+			expect(() => transformKiroRequest(createModel(), context)).toThrow(/Kiro does not support image type/);
+		}
 	});
 
 	test("rejects images in tool results instead of emitting an unsupported wire shape", () => {

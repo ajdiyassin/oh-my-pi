@@ -55,10 +55,6 @@ function imageFormat(mimeType: string): KiroImageBlock["format"] {
 			return "jpeg";
 		case "image/png":
 			return "png";
-		case "image/gif":
-			return "gif";
-		case "image/webp":
-			return "webp";
 		default:
 			throw new Error(`Kiro does not support image type: ${mimeType}`);
 	}
