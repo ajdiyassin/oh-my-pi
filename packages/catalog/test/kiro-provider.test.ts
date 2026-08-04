@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { sanitizeKiroModelCatalog } from "@oh-my-pi/pi-catalog/discovery/kiro";
+import { kiroManagementRequest, sanitizeKiroModelCatalog } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import {
 	DEFAULT_MODEL_PER_PROVIDER,
@@ -106,6 +106,36 @@ describe("Kiro provider discovery", () => {
 
 		expect(models?.map(model => model.id)).toEqual(["kiro-oauth-model"]);
 		expect(requestBody).toEqual({ origin: "KIRO_CLI", profileArn: PROFILE_ARN });
+	});
+
+	test("keeps discovery on the legacy service and permits the control-plane quota service", async () => {
+		const targets: string[] = [];
+		const fetch: FetchImpl = async (_input, init) => {
+			const headers = new Headers(init?.headers);
+			targets.push(headers.get("x-amz-target") ?? "");
+			return Response.json({});
+		};
+
+		await kiroManagementRequest({
+			apiRegion: "us-east-1",
+			token: "discovery-token",
+			target: "ListAvailableModels",
+			body: { origin: "KIRO_CLI" },
+			fetch,
+		});
+		await kiroManagementRequest({
+			apiRegion: "us-east-1",
+			token: "usage-token",
+			service: "KiroControlPlaneBearerService",
+			target: "GetUsageLimits",
+			body: { origin: "KIRO_CLI", profileArn: PROFILE_ARN },
+			fetch,
+		});
+
+		expect(targets).toEqual([
+			"AmazonCodeWhispererService.ListAvailableModels",
+			"KiroControlPlaneBearerService.GetUsageLimits",
+		]);
 	});
 
 	test("uses a credential-scoped cache namespace without raw credential identity", () => {

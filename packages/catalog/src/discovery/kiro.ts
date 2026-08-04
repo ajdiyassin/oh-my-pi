@@ -88,7 +88,13 @@ export interface SanitizedKiroModelCatalog {
 export interface KiroManagementRequestOptions {
 	apiRegion: string;
 	token: string;
-	target: "ListAvailableProfiles" | "ListAvailableModels";
+	target: "ListAvailableProfiles" | "ListAvailableModels" | "GetUsageLimits";
+	/**
+	 * `X-Amz-Target` service prefix. Discovery targets live on the legacy
+	 * `AmazonCodeWhispererService`; `GetUsageLimits` is served by
+	 * `KiroControlPlaneBearerService` in current captures.
+	 */
+	service?: "AmazonCodeWhispererService" | "KiroControlPlaneBearerService";
 	body: unknown;
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
@@ -514,7 +520,7 @@ export async function kiroManagementRequest(options: KiroManagementRequestOption
 			headers: {
 				"Content-Type": "application/x-amz-json-1.0",
 				Authorization: `Bearer ${options.token}`,
-				"X-Amz-Target": `AmazonCodeWhispererService.${options.target}`,
+				"X-Amz-Target": `${options.service ?? "AmazonCodeWhispererService"}.${options.target}`,
 			},
 			body: JSON.stringify(options.body),
 			signal,
