@@ -5,6 +5,16 @@ import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
 import { formatDuration, renderAsciiBar } from "./format";
 
+function sanitizeUsageLine(value: string): string {
+	return sanitizeText(value.replace(/[\r\n]+/g, " ").replace(/\t/g, "  "));
+}
+
+function sanitizeOptionalUsageLine(value: unknown): string | undefined {
+	if (typeof value !== "string" || value.length === 0) return undefined;
+	const sanitized = sanitizeUsageLine(value);
+	return sanitized.length > 0 ? sanitized : undefined;
+}
+
 function formatProviderName(provider: string): string {
 	return provider
 		.split(/[-_]/g)
@@ -13,11 +23,12 @@ function formatProviderName(provider: string): string {
 }
 
 function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
-	if (!windowLabel) return "";
+	const safeWindowLabel = sanitizeOptionalUsageLine(windowLabel);
+	if (!safeWindowLabel) return "";
 	const normalizedLabel = label.toLowerCase();
-	const normalizedWindow = windowLabel.toLowerCase();
+	const normalizedWindow = safeWindowLabel.toLowerCase();
 	if (normalizedWindow === "quota window" || normalizedLabel.includes(normalizedWindow)) return "";
-	return ` — ${windowLabel}`;
+	return ` — ${safeWindowLabel}`;
 }
 
 function formatUsageAmount(limit: UsageLimit): string {
@@ -33,29 +44,22 @@ function formatUsageAmount(limit: UsageLimit): string {
 }
 
 function formatUsageReportAccount(report: UsageReport, limit: UsageLimit, index: number): string {
-	const metaOrgName = report.metadata?.orgName;
-	const metaOrgId = report.metadata?.orgId;
-	const org =
-		typeof metaOrgName === "string" && metaOrgName
-			? metaOrgName
-			: typeof metaOrgId === "string" && metaOrgId
-				? metaOrgId
-				: undefined;
+	const metaOrgName = sanitizeOptionalUsageLine(report.metadata?.orgName);
+	const metaOrgId = sanitizeOptionalUsageLine(report.metadata?.orgId);
+	const org = metaOrgName ?? metaOrgId;
 	// Two subscriptions (orgs) can share one email — suffix the org so the rows
 	// are tellable apart.
-	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return org ? `${email} (${org})` : email;
+	const email = sanitizeOptionalUsageLine(report.metadata?.email);
+	if (email) return org ? `${email} (${org})` : email;
 	// Guard metadata values for truthiness before using, then fall back to scope.
 	// ?? won't help here: empty string is not null/undefined, so it would suppress
 	// a valid scoped fallback (e.g. metadata.accountId="" hides limit.scope.accountId).
-	const metaAccountId = report.metadata?.accountId;
-	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit.scope.accountId;
-	if (typeof accountId === "string" && accountId) {
+	const accountId = sanitizeOptionalUsageLine(report.metadata?.accountId) ?? sanitizeOptionalUsageLine(limit.scope.accountId);
+	if (accountId) {
 		return org && org !== accountId ? `${accountId} (${org})` : accountId;
 	}
-	const metaProjectId = report.metadata?.projectId;
-	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit.scope.projectId;
-	if (typeof projectId === "string" && projectId) return projectId;
+	const projectId = sanitizeOptionalUsageLine(report.metadata?.projectId) ?? sanitizeOptionalUsageLine(limit.scope.projectId);
+	if (projectId) return projectId;
 	return `account ${index + 1}`;
 }
 
@@ -77,7 +81,7 @@ function renderUsageReports(
 	for (const [provider, providerReports] of [...grouped.entries()].sort(([left], [right]) =>
 		left.localeCompare(right),
 	)) {
-		lines.push("", formatProviderName(provider));
+		lines.push("", sanitizeUsageLine(formatProviderName(provider)));
 		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
 		if (reportingModels.length > 0) {
 			lines.push("  Models with usage data");
@@ -93,11 +97,9 @@ function renderUsageReports(
 			const savedResets = report.resetCredits?.availableCount ?? 0;
 			if (savedResets > 0) {
 				const resetLabel =
-					typeof report.metadata?.email === "string"
-						? report.metadata.email
-						: typeof report.metadata?.accountId === "string"
-							? report.metadata.accountId
-							: "account";
+					sanitizeOptionalUsageLine(report.metadata?.email) ??
+					sanitizeOptionalUsageLine(report.metadata?.accountId) ??
+					"account";
 				lines.push(
 					`- ${resetLabel}: ${savedResets} saved rate-limit reset${savedResets === 1 ? "" : "s"} available — /usage reset to spend`,
 				);
@@ -109,9 +111,11 @@ function renderUsageReports(
 							if (!Number.isNaN(expiryMs)) {
 								const remaining = expiryMs - nowMs;
 								if (remaining > 0) {
-									lines.push(`  expires in ${formatDuration(remaining)} (${credit.expiresAt.slice(0, 10)})`);
+									lines.push(
+										`  expires in ${formatDuration(remaining)} (${sanitizeUsageLine(credit.expiresAt.slice(0, 10))})`,
+									);
 								} else {
-									lines.push(`  expired (${credit.expiresAt.slice(0, 10)})`);
+									lines.push(`  expired (${sanitizeUsageLine(credit.expiresAt.slice(0, 10))})`);
 								}
 							}
 						}
@@ -119,28 +123,26 @@ function renderUsageReports(
 				}
 			}
 			if (report.limits.length === 0) {
-				const email = typeof report.metadata?.email === "string" ? report.metadata.email : "account";
+				const email = sanitizeOptionalUsageLine(report.metadata?.email) ?? "account";
 				lines.push(`- ${email}: no limits reported`);
 				continue;
 			}
 			for (let index = 0; index < report.limits.length; index++) {
 				const limit = report.limits[index]!;
-				const window = limit.window?.label ?? limit.scope.windowId;
+				const label = sanitizeUsageLine(limit.label);
+				const window = sanitizeOptionalUsageLine(limit.window?.label ?? limit.scope.windowId);
 				// Skip the tier suffix when the label already names it (e.g. Anthropic's
 				// "Claude 7 Day (Fable)" with scope.tier "fable") — mirrors limitTitle in usage-cli.
-				const tier =
-					limit.scope.tier && !limit.label.toLowerCase().includes(limit.scope.tier.toLowerCase())
-						? ` (${limit.scope.tier})`
-						: "";
-				lines.push(`- ${limit.label}${tier}${formatWindowSuffix(limit.label, window)}`);
+				const tierValue = sanitizeOptionalUsageLine(limit.scope.tier);
+				const tier = tierValue && !label.toLowerCase().includes(tierValue.toLowerCase()) ? ` (${tierValue})` : "";
+				lines.push(`- ${label}${tier}${formatWindowSuffix(label, window)}`);
 				lines.push(
 					`  ${formatUsageReportAccount(report, limit, index)}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
 				);
 				lines.push(`  ${renderAsciiBar(limit.amount.usedFraction)}`);
 				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs) {
-					lines.push(
-						`  ${limit.window.resetLabel ?? "resets"} in ${formatDuration(limit.window.resetsAt - nowMs)}`,
-					);
+					const resetLabel = sanitizeOptionalUsageLine(limit.window.resetLabel) ?? "resets";
+					lines.push(`  ${resetLabel} in ${formatDuration(limit.window.resetsAt - nowMs)}`);
 				}
 				if (limit.notes && limit.notes.length > 0)
 					lines.push(

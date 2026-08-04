@@ -30,4 +30,41 @@ describe("PR 3318 repro", () => {
 		expect(text).toContain("Models with usage data");
 		expect(text).toContain("test-provider/coding-plan-model");
 	});
+
+	it("sanitizes provider-controlled usage labels before rendering", async () => {
+		const report: UsageReport = {
+			provider: "test-provider",
+			fetchedAt: Date.now(),
+			metadata: {
+				email: "\u001b[32muser\nname\t",
+				orgName: "\u001b[33mteam\norg\t",
+			},
+			limits: [
+				{
+					id: "daily",
+					label: "\u001b[31mCredits\nInjected\t",
+					scope: { provider: "test-provider", accountId: "account\nvalue", tier: "\u001b[34mPro\t" },
+					window: {
+						id: "daily",
+						label: "\u001b[35mDaily\nwindow\t",
+						resetLabel: "\u001b[36mresets\nsoon\t",
+						resetsAt: Date.now() + 60_000,
+					},
+					amount: { unit: "requests", used: 1, limit: 10, usedFraction: 0.1 },
+				},
+			],
+		};
+		const text = await buildUsageReportText({
+			session: {
+				model: undefined,
+				fetchUsageReports: async () => [report],
+			},
+		} as never);
+
+		expect(text).not.toContain("\u001b");
+		expect(text).not.toContain("\t");
+		expect(text).not.toContain("\nInjected");
+		expect(text).toContain("Credits Injected");
+		expect(text).toContain("user name (team org)");
+	});
 });
