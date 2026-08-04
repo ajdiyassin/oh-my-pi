@@ -15,6 +15,8 @@
 ### Added
 
 - Added capture-backed OAuth Kiro quota reporting with profile-scoped usage limits and privacy-safe metadata.
+- Added the native Kiro provider with AWS EventStream request/response transport, image and tool-call conversion, adaptive reasoning, retry/error classification, and public stream dispatch.
+- Reserved the native `kiro` API and OAuth identifiers so legacy extensions cannot shadow the built-in provider.
 
 ### Fixed
 
@@ -30,10 +32,6 @@
 
 - Fixed OpenAI-Codex (ChatGPT OAuth) requests failing with an `Unsupported service_tier: auto` error on default or legacy sessions by omitting the implicit `auto` service tier on the wire.
 - Fixed an issue where Cursor `kimi-k3` sessions would break permanently when a same-model assistant turn was persisted without thinking blocks, replacing hard errors with graceful warnings.
-### Added
-
-- Added the native Kiro provider with AWS EventStream request/response transport, image and tool-call conversion, adaptive reasoning, retry/error classification, and public stream dispatch.
-- Reserved the native `kiro` API and OAuth identifiers so legacy extensions cannot shadow the built-in provider.
 
 ## [17.2.6] - 2026-08-03
 
