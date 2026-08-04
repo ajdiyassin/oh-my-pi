@@ -1,5 +1,10 @@
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { parseKiroEndpoint, parseKiroProfileArn } from "@oh-my-pi/pi-catalog/wire/kiro";
+import {
+	kiroRuntimeBaseUrl,
+	parseKiroEndpoint,
+	parseKiroProfileArn,
+	validateKiroApiRegion,
+} from "@oh-my-pi/pi-catalog/wire/kiro";
 import * as AIError from "../../error";
 import type {
 	AssistantMessage,
@@ -98,9 +103,13 @@ function parseCredential(value: string | undefined): KiroStreamCredential {
 		if (credential.profileArn !== undefined && typeof credential.profileArn !== "string") {
 			throw new Error("profileArn invalid");
 		}
+		if (credential.apiEndpoint !== undefined && typeof credential.apiEndpoint !== "string") {
+			throw new Error("apiEndpoint invalid");
+		}
 		return {
 			token: credential.token,
 			...(typeof credential.profileArn === "string" ? { profileArn: credential.profileArn } : {}),
+			...(typeof credential.apiEndpoint === "string" ? { apiEndpoint: credential.apiEndpoint } : {}),
 		};
 	} catch (error) {
 		throw new KiroApiError("Kiro credential projection is invalid", 401, {
@@ -108,6 +117,39 @@ function parseCredential(value: string | undefined): KiroStreamCredential {
 			cause: error,
 		});
 	}
+}
+
+function resolveKiroRuntimeBaseUrl(model: Model, credential: KiroStreamCredential): string {
+	if (credential.profileArn !== undefined) {
+		const profile = parseKiroProfileArn(credential.profileArn);
+		if (!profile) {
+			throw new KiroApiError("Invalid Kiro profile ARN", 0, { code: "INVALID_PROFILE" });
+		}
+		return kiroRuntimeBaseUrl(profile.apiRegion);
+	}
+
+	if (credential.apiEndpoint !== undefined) {
+		const endpoint = parseKiroEndpoint(credential.apiEndpoint);
+		if (endpoint?.kind !== "runtime") {
+			throw new KiroApiError("Invalid Kiro runtime endpoint", 0, { code: "INVALID_ENDPOINT" });
+		}
+		return endpoint.baseUrl;
+	}
+
+	const configuredRegion = Bun.env.KIRO_API_REGION;
+	if (configuredRegion !== undefined) {
+		const apiRegion = validateKiroApiRegion(configuredRegion);
+		if (!apiRegion) {
+			throw new KiroApiError("KIRO_API_REGION is not a valid AWS region", 0, { code: "INVALID_REGION" });
+		}
+		return kiroRuntimeBaseUrl(apiRegion);
+	}
+
+	const modelEndpoint = parseKiroEndpoint(model.baseUrl);
+	if (modelEndpoint?.kind !== "runtime") {
+		throw new KiroApiError("Invalid Kiro runtime endpoint", 0, { code: "INVALID_ENDPOINT" });
+	}
+	return modelEndpoint.baseUrl;
 }
 
 function mapStopReason(
@@ -327,17 +369,8 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 	void (async () => {
 		let state = createAttempt(model, stream, timestamp);
 		try {
-			const route = parseKiroEndpoint(model.baseUrl);
-			if (route?.kind !== "runtime") {
-				throw new KiroApiError("Invalid Kiro runtime endpoint", 0, { code: "INVALID_ENDPOINT" });
-			}
 			const credential = parseCredential(typeof options.apiKey === "string" ? options.apiKey : undefined);
-			if (credential.profileArn) {
-				const profile = parseKiroProfileArn(credential.profileArn);
-				if (!profile || profile.apiRegion !== route.apiRegion) {
-					throw new KiroApiError("Kiro profile does not match the runtime region", 0, { code: "INVALID_PROFILE" });
-				}
-			}
+			const runtimeBaseUrl = resolveKiroRuntimeBaseUrl(model, credential);
 			let recoveryAttempt = 0;
 			// Resolved once per request: caller option → env override → Kiro fallback.
 			const firstEventTimeoutMs =
@@ -357,7 +390,7 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 				const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
 				let response: Response;
 				try {
-					response = await (options.fetch ?? globalThis.fetch)(route.baseUrl, {
+					response = await (options.fetch ?? globalThis.fetch)(runtimeBaseUrl, {
 						method: "POST",
 						headers: mergeHeaders(model.headers, options.headers, {
 							"content-type": "application/x-amz-json-1.0",

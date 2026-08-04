@@ -14,6 +14,8 @@ import { Effort } from "@oh-my-pi/pi-catalog/effort";
 
 const TEST_PROFILE: KiroStreamCredential["profileArn"] =
 	"arn:aws:codewhisperer:us-east-1:123456789012:profile/test-profile";
+const EU_PROFILE = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/eu-profile";
+const EU_RUNTIME_ENDPOINT = "https://runtime.eu-central-1.kiro.dev/";
 const TEST_CONTEXT: Context = {
 	messages: [{ role: "user", content: "Say hello", timestamp: 0 }],
 };
@@ -249,7 +251,7 @@ describe("Kiro stream transport", () => {
 		expect(result.content).toContainEqual({ type: "text", text: "recovered" });
 	});
 
-	test("maps context overflow responses and validates endpoint/profile routing before fetch", async () => {
+	test("maps context overflow responses and validates active endpoint routing before fetch", async () => {
 		let fetchCalls = 0;
 		const contextFetch: FetchImpl = async () => {
 			fetchCalls += 1;
@@ -277,14 +279,26 @@ describe("Kiro stream transport", () => {
 		}).result();
 		expect(invalidEndpoint.errorMessage).toContain("Invalid Kiro runtime endpoint");
 
-		const mismatchedProfile = await streamKiro(createModel(), TEST_CONTEXT, {
-			apiKey: JSON.stringify({
-				token: "kiro-token",
-				profileArn: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/other",
-			}),
+		const malformedCredential = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", apiEndpoint: 42 }),
 			fetch: rejectingFetch,
 		}).result();
-		expect(mismatchedProfile.errorMessage).toContain("does not match the runtime region");
+		expect(malformedCredential.errorMessage).toContain("Kiro credential projection is invalid");
+
+		const profileRequests: string[] = [];
+		const profileFetch: FetchImpl = async input => {
+			profileRequests.push(String(input));
+			return responseForEvents([["assistantResponseEvent", { content: "profile-routed" }]]);
+		};
+		const activeProfile = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({
+				token: "kiro-token",
+				profileArn: EU_PROFILE,
+			}),
+			fetch: profileFetch,
+		}).result();
+		expect(activeProfile.stopReason).toBe("stop");
+		expect(profileRequests).toEqual([EU_RUNTIME_ENDPOINT]);
 	});
 
 	test("reports a local first-event timeout and caller abort distinctly", async () => {
@@ -341,5 +355,37 @@ describe("Kiro stream transport", () => {
 		expect(requestHeaders?.get("x-amz-target")).toBe("KiroRuntimeService.GenerateAssistantResponse");
 		expect(requestHeaders?.get("authorization")).toBe("Bearer kiro-token");
 		expect(requestHeaders?.get("accept")).toBe("application/vnd.amazon.eventstream");
+	});
+
+	test("routes inference through the active credential instead of stale model metadata", async () => {
+		const requestedUrls: string[] = [];
+		const fetch: FetchImpl = async input => {
+			requestedUrls.push(String(input));
+			return responseForEvents([["assistantResponseEvent", { content: "routed" }]]);
+		};
+		const staleModel = createModel();
+
+		const oauthResult = await streamKiro(staleModel, TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "oauth-token", profileArn: EU_PROFILE }),
+			fetch,
+		}).result();
+		const apiKeyResult = await streamKiro(staleModel, TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "api-key", apiEndpoint: EU_RUNTIME_ENDPOINT }),
+			fetch,
+		}).result();
+
+		const previousRegion = Bun.env.KIRO_API_REGION;
+		try {
+			Bun.env.KIRO_API_REGION = "eu-central-1";
+			const envResult = await streamKiro(staleModel, TEST_CONTEXT, { apiKey: "env-token", fetch }).result();
+			expect(envResult.stopReason).toBe("stop");
+		} finally {
+			if (previousRegion === undefined) delete Bun.env.KIRO_API_REGION;
+			else Bun.env.KIRO_API_REGION = previousRegion;
+		}
+
+		expect(oauthResult.stopReason).toBe("stop");
+		expect(apiKeyResult.stopReason).toBe("stop");
+		expect(requestedUrls).toEqual([EU_RUNTIME_ENDPOINT, EU_RUNTIME_ENDPOINT, EU_RUNTIME_ENDPOINT]);
 	});
 });

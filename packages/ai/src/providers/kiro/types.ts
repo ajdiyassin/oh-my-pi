@@ -3,6 +3,7 @@ import type { SimpleStreamOptions } from "../../types";
 export interface KiroStreamCredential {
 	token: string;
 	profileArn?: string;
+	apiEndpoint?: string;
 }
 
 export interface KiroOptions extends SimpleStreamOptions {

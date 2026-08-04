@@ -94,4 +94,66 @@ describe("ModelRegistry Kiro cache isolation", () => {
 		expect(profileBRegistry.getAll().filter(model => model.provider === "kiro")).toHaveLength(0);
 		expect(discoveryCalls).toBe(1);
 	});
+
+	test("restores the cache selected by a persisted Kiro API-key endpoint", async () => {
+		const endpointA = "https://runtime.eu-central-1.kiro.dev/";
+		const endpointB = "https://runtime.us-east-1.kiro.dev/";
+		const credentialA = JSON.stringify({ token: "kiro-api-key", apiEndpoint: endpointA });
+		const discoveredModelId = "kiro-api-key-model";
+		let discoveryCalls = 0;
+
+		const discoveryFetch: FetchImpl = async () => {
+			discoveryCalls += 1;
+			return Response.json({
+				models: [
+					{
+						modelId: discoveredModelId,
+						modelName: "API key model",
+						supportedInputModalities: ["TEXT"],
+						supportedOutputModalities: ["TEXT"],
+						tokenLimits: { maxInputTokens: 32_000, maxOutputTokens: 4_000 },
+					},
+				],
+			});
+		};
+
+		const seeded = await resolveProviderModels(
+			{
+				...kiroModelManagerOptions({ apiKey: credentialA, fetch: discoveryFetch }),
+				cacheDbPath,
+			},
+			"online",
+		);
+		expect(seeded.models.map(model => model.id)).toEqual([discoveredModelId]);
+		expect(discoveryCalls).toBe(1);
+
+		await authStorage.set("kiro", {
+			type: "api_key",
+			key: "kiro-api-key",
+			apiEndpoint: endpointA,
+			source: "login",
+		});
+		expect(await authStorage.peekApiKey("kiro")).toBe(credentialA);
+
+		let offlineCalls = 0;
+		const offlineFetch: FetchImpl = async input => {
+			offlineCalls += 1;
+			throw new Error(`Kiro offline restore unexpectedly fetched ${String(input)}`);
+		};
+		const endpointARegistry = new ModelRegistry(authStorage, modelsPath, { fetch: offlineFetch });
+		await endpointARegistry.refreshProvider("kiro", "offline");
+		expect(endpointARegistry.find("kiro", discoveredModelId)?.name).toBe("API key model");
+		expect(offlineCalls).toBe(0);
+
+		await authStorage.set("kiro", {
+			type: "api_key",
+			key: "kiro-api-key",
+			apiEndpoint: endpointB,
+			source: "login",
+		});
+		const endpointBRegistry = new ModelRegistry(authStorage, modelsPath, { fetch: offlineFetch });
+		await endpointBRegistry.refreshProvider("kiro", "offline");
+		expect(endpointBRegistry.find("kiro", discoveredModelId)).toBeUndefined();
+		expect(offlineCalls).toBe(0);
+	});
 });

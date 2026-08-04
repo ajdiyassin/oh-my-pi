@@ -5414,7 +5414,11 @@ export class AuthStorage {
 		);
 		if (loginApiKeySelection) {
 			this.#recordSessionCredential(provider, sessionId, "api_key", loginApiKeySelection.index);
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const key = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (provider === "kiro" && key && loginApiKeySelection.credential.apiEndpoint) {
+				return JSON.stringify({ token: key, apiEndpoint: loginApiKeySelection.credential.apiEndpoint });
+			}
+			return key;
 		}
 
 		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
@@ -5432,7 +5436,11 @@ export class AuthStorage {
 		);
 		if (apiKeySelection) {
 			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const key = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (provider === "kiro" && key && apiKeySelection.credential.apiEndpoint) {
+				return JSON.stringify({ token: key, apiEndpoint: apiKeySelection.credential.apiEndpoint });
+			}
+			return key;
 		}
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
