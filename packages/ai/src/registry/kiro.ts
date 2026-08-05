@@ -23,6 +23,7 @@ export async function selectKiroLoginMethod(callbacks: OAuthLoginCallbacks): Pro
 
 	switch (answer.trim().toLowerCase()) {
 		case "":
+			throw new AIError.OnPromptRequiredError("Kiro login method");
 		case "aws":
 		case "1":
 			return "aws";

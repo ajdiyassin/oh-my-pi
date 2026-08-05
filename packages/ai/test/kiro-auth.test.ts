@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { kiroProvider } from "@oh-my-pi/pi-ai/registry/kiro";
+import { kiroProvider, selectKiroLoginMethod } from "@oh-my-pi/pi-ai/registry/kiro";
 import { getOAuthApiKey } from "@oh-my-pi/pi-ai/registry/oauth";
 import {
 	KIRO_IDENTITY_CENTER_SCOPES,
@@ -151,6 +151,15 @@ describe("Kiro authentication", () => {
 			},
 		]);
 		expect(progress).toEqual(["Builder ID login is not available yet."]);
+	});
+
+	it("does not silently choose AWS when the text fallback is empty", async () => {
+		await expect(
+			selectKiroLoginMethod({
+				onAuth: () => {},
+				onPrompt: async () => "",
+			}),
+		).rejects.toBeInstanceOf(AIError.OnPromptRequiredError);
 	});
 
 	it("routes API selection to the existing API-key validation path", async () => {

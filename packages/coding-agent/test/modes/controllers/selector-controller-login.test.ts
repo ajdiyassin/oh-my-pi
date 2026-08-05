@@ -83,6 +83,40 @@ describe("SelectorController login", () => {
 		expect(ctx.showError).not.toHaveBeenCalled();
 	});
 
+	it("does not report success or refresh models when login stores no identity", async () => {
+		const presentedBlocks: unknown[] = [];
+		const refreshProvider = vi.fn(async () => {});
+		const authStorage = {
+			login: vi.fn(async () => undefined),
+		} as unknown as AuthStorage;
+		const editorSlot: unknown[] = [];
+		const editor = {};
+		const ctx = {
+			oauthManualInput: { waitForInput: vi.fn(), clear: vi.fn() },
+			session: { modelRegistry: { authStorage, refreshProvider } },
+			editorContainer: {
+				clear: vi.fn(() => editorSlot.splice(0)),
+				addChild: vi.fn((child: unknown) => editorSlot.push(child)),
+				children: editorSlot,
+			},
+			editor,
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			present: vi.fn((block: unknown) => presentedBlocks.push(block)),
+			openInBrowser: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new SelectorController(ctx);
+
+		await controller.showOAuthSelector("login", "kiro");
+
+		expect(authStorage.login).toHaveBeenCalledTimes(1);
+		expect(refreshProvider).not.toHaveBeenCalled();
+		expect(presentedBlocks).toEqual([]);
+		expect(ctx.showError).not.toHaveBeenCalled();
+		expect(editorSlot).toEqual([editor]);
+	});
+
 	it("shows only a safe Kiro profile label after login", async () => {
 		const loginSaved = Promise.withResolvers<void>();
 		const presentedBlocks: unknown[] = [];
