@@ -11,7 +11,7 @@
  */
 
 import { type Type, type } from "@oh-my-pi/omptype";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AuthStorage, StoredCredentialBlock } from "../auth-storage";
 import { readKiroPromptDefaults } from "../registry/oauth/kiro";
 import { parseBind } from "../utils/parse-bind";
@@ -28,6 +28,9 @@ import type {
 	HealthzResponse,
 	KiroLoginCancelResponse,
 	KiroLoginDefaultsResponse,
+	KiroLoginSelectionOption,
+	KiroLoginSelectionRequest,
+	KiroLoginSelectionResponse,
 	KiroLoginStartRequest,
 	KiroLoginStartResponse,
 	KiroLoginStatusResponse,
@@ -650,11 +653,19 @@ const KIRO_LOGIN_MAX_LIFETIME_MS = 10 * 60_000;
 const KIRO_LOGIN_RESULT_RETENTION_MS = 5 * 60_000;
 const KIRO_LOGIN_ERROR_MESSAGE = "Kiro login failed; run login again.";
 const KIRO_LOGIN_CANCELLED_MESSAGE = "Kiro login cancelled.";
-const KIRO_LOGIN_STATUS_ROUTE = /^\/v1\/login\/kiro\/([A-Za-z0-9-]+)$/;
+const KIRO_LOGIN_STATUS_ROUTE = /^\/v1\/login\/kiro\/([A-Za-z0-9-]+)(?:\/selection)?$/;
 
 interface KiroLoginStartWaiter {
 	promise: Promise<KiroLoginStartResponse>;
 	resolve(value: KiroLoginStartResponse): void;
+	reject(reason?: unknown): void;
+}
+
+interface KiroLoginSelectionWaiter {
+	promptId: string;
+	options: Map<string, string>;
+	promise: Promise<string>;
+	resolve(value: string): void;
 	reject(reason?: unknown): void;
 }
 
@@ -665,8 +676,81 @@ interface KiroLoginSession {
 	controller: AbortController;
 	startReady: KiroLoginStartWaiter;
 	state: KiroLoginStatusResponse;
+	selection?: KiroLoginSelectionWaiter;
+	expired?: boolean;
 	started?: KiroLoginStartResponse;
 	cleanupTimer?: NodeJS.Timeout;
+}
+
+function sanitizeKiroSelectionText(value: string, fallback: string): string {
+	const normalized = sanitizeText(value).replace(/\s+/g, " ").trim().slice(0, 128);
+	if (!normalized || normalized.includes("arn:") || /\b\d{12}\b/.test(normalized)) return fallback;
+	return normalized;
+}
+
+function rejectKiroLoginSelection(session: KiroLoginSession, reason: unknown): void {
+	const waiter = session.selection;
+	if (!waiter) return;
+	session.selection = undefined;
+	waiter.reject(reason);
+}
+
+function waitForKiroLoginSelection(
+	session: KiroLoginSession,
+	prompt: {
+		message: string;
+		options: readonly { value: string; label: string; description?: string }[];
+		defaultValue?: string;
+	},
+): Promise<string> {
+	if (session.selection) throw new Error("Kiro login already has a pending selection");
+	const options = new Map<string, string>();
+	const wireOptions: KiroLoginSelectionOption[] = [];
+	for (const option of prompt.options) {
+		let optionId = crypto.randomUUID();
+		while (options.has(optionId)) optionId = crypto.randomUUID();
+		options.set(optionId, option.value);
+		const label = sanitizeKiroSelectionText(option.label, "Kiro profile");
+		const description = option.description ? sanitizeKiroSelectionText(option.description, "") : undefined;
+		wireOptions.push({
+			optionId,
+			label,
+			...(description ? { description } : {}),
+		});
+	}
+	if (wireOptions.length === 0) throw new Error("Kiro login selection had no options");
+	const waiter = Promise.withResolvers<string>();
+	const selection: KiroLoginSelectionWaiter = {
+		promptId: crypto.randomUUID(),
+		options,
+		promise: waiter.promise,
+		resolve: waiter.resolve,
+		reject: waiter.reject,
+	};
+	session.selection = selection;
+	const defaultOptionId = wireOptions.find(
+		(_option, index) => prompt.options[index]?.value === prompt.defaultValue,
+	)?.optionId;
+	session.state = {
+		status: "selection_required",
+		promptId: selection.promptId,
+		message: sanitizeKiroSelectionText(prompt.message, "Select a Kiro profile"),
+		options: wireOptions,
+		...(defaultOptionId ? { defaultOptionId } : {}),
+	};
+	return waiter.promise.then(
+		value => {
+			if (session.selection === selection) {
+				session.selection = undefined;
+				if (session.state.status === "selection_required") session.state = { status: "pending" };
+			}
+			return value;
+		},
+		error => {
+			if (session.selection === selection) session.selection = undefined;
+			throw error;
+		},
+	);
 }
 
 function scheduleKiroLoginSessionCleanup(
@@ -677,8 +761,10 @@ function scheduleKiroLoginSessionCleanup(
 	if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
 	session.cleanupTimer = setTimeout(
 		() => {
-			if (session.state.status === "pending") {
+			if (session.state.status !== "complete" && session.state.status !== "error") {
+				session.expired = true;
 				session.controller.abort();
+				rejectKiroLoginSelection(session, new Error(KIRO_LOGIN_ERROR_MESSAGE));
 				session.state = { status: "error", message: KIRO_LOGIN_ERROR_MESSAGE };
 				session.startReady.reject(new Error(KIRO_LOGIN_ERROR_MESSAGE));
 				scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_RESULT_RETENTION_MS);
@@ -717,7 +803,8 @@ function cancelKiroLoginSession(
 	message = KIRO_LOGIN_CANCELLED_MESSAGE,
 ): void {
 	session.controller.abort();
-	if (session.state.status === "pending") {
+	rejectKiroLoginSelection(session, new Error(message));
+	if (session.state.status !== "complete" && session.state.status !== "error") {
 		session.state = { status: "error", message };
 		session.startReady.reject(new Error(message));
 	}
@@ -782,7 +869,10 @@ function runKiroLoginSession(
 				},
 				onSelect: async prompt => {
 					if (prompt.message === "Select Kiro login method") return "aws";
-					if (prompt.message === "Select a Kiro profile") return "1";
+					if (prompt.message === "Select a Kiro profile") {
+						if (prompt.options.length <= 1) return prompt.options[0]?.value ?? prompt.defaultValue ?? "";
+						return waitForKiroLoginSelection(session, prompt);
+					}
 					throw new Error("Unexpected Kiro selection prompt");
 				},
 				signal: session.controller.signal,
@@ -793,7 +883,12 @@ function runKiroLoginSession(
 			scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_RESULT_RETENTION_MS);
 		} catch (error) {
 			if (session.state.status === "complete") return;
-			const message = session.controller.signal.aborted ? KIRO_LOGIN_CANCELLED_MESSAGE : KIRO_LOGIN_ERROR_MESSAGE;
+			const message = session.expired
+				? KIRO_LOGIN_ERROR_MESSAGE
+				: session.controller.signal.aborted
+					? KIRO_LOGIN_CANCELLED_MESSAGE
+					: KIRO_LOGIN_ERROR_MESSAGE;
+			rejectKiroLoginSelection(session, error);
 			session.state = { status: "error", message };
 			session.startReady.reject(error);
 			scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_RESULT_RETENTION_MS);
@@ -866,14 +961,48 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 					}
 				}
 				const kiroSessionMatch = pathname.match(KIRO_LOGIN_STATUS_ROUTE);
-				if (kiroSessionMatch && (req.method === "GET" || req.method === "DELETE")) {
+				if (kiroSessionMatch) {
 					const session = kiroSessions.get(kiroSessionMatch[1]);
 					if (!session) return json(404, { error: "Kiro login session not found" });
+					const isSelectionRoute = pathname.endsWith("/selection");
+					if (isSelectionRoute && req.method === "DELETE") {
+						return json(404, { error: "Kiro login selection route not found" });
+					}
 					if (req.method === "DELETE") {
 						cancelKiroLoginSession(kiroSessions, session);
 						const body: KiroLoginCancelResponse = { ok: true };
 						return json(200, body);
 					}
+					if (req.method === "POST" && isSelectionRoute) {
+						const parsed = await parseBody(req, getAuthBrokerWireSchemas().kiroLoginSelectionRequestSchema);
+						if (!parsed.ok) {
+							if (req.signal.aborted) cancelKiroLoginSession(kiroSessions, session);
+							return parsed.response;
+						}
+						if (req.signal.aborted) {
+							cancelKiroLoginSession(kiroSessions, session);
+							return empty(499);
+						}
+						const request = parsed.data as KiroLoginSelectionRequest;
+						const waiter = session.selection;
+						if (!waiter || session.state.status !== "selection_required") {
+							return json(409, { error: "Kiro login selection is no longer pending" });
+						}
+						if (request.promptId !== waiter.promptId) {
+							return json(400, { error: "Kiro login selection prompt is stale" });
+						}
+						const selectedValue = waiter.options.get(request.optionId);
+						if (selectedValue === undefined) {
+							return json(400, { error: "Unknown Kiro login selection option" });
+						}
+						session.selection = undefined;
+						session.state = { status: "pending" };
+						waiter.resolve(selectedValue);
+						const body: KiroLoginSelectionResponse = { ok: true };
+						return json(200, body);
+					}
+					if (isSelectionRoute) return json(404, { error: "Kiro login selection route not found" });
+					if (req.method !== "GET") return json(404, { error: `No route: ${req.method} ${pathname}` });
 					if (req.signal.aborted) {
 						cancelKiroLoginSession(kiroSessions, session);
 						return empty(499);

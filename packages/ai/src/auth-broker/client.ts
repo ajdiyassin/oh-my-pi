@@ -25,6 +25,8 @@ import type {
 	HealthzResponse,
 	KiroLoginCancelResponse,
 	KiroLoginDefaultsResponse,
+	KiroLoginSelectionRequest,
+	KiroLoginSelectionResponse,
 	KiroLoginStartRequest,
 	KiroLoginStartResponse,
 	KiroLoginStatusResponse,
@@ -49,6 +51,7 @@ type AuthBrokerResponseSchemaName =
 	| "healthzResponseSchema"
 	| "kiroLoginCancelResponseSchema"
 	| "kiroLoginDefaultsResponseSchema"
+	| "kiroLoginSelectionResponseSchema"
 	| "kiroLoginStartResponseSchema"
 	| "kiroLoginStatusResponseSchema"
 	| "usageHistoryResponseSchema"
@@ -159,6 +162,22 @@ export class AuthBrokerClient {
 			schema: "kiroLoginStatusResponseSchema",
 			signal,
 		});
+	}
+
+	selectKiroLoginOption(
+		sessionId: string,
+		request: KiroLoginSelectionRequest,
+		signal?: AbortSignal,
+	): Promise<KiroLoginSelectionResponse> {
+		return this.#request<KiroLoginSelectionResponse>(
+			"POST",
+			`/v1/login/kiro/${encodeURIComponent(sessionId)}/selection`,
+			{
+				body: request,
+				schema: "kiroLoginSelectionResponseSchema",
+				signal,
+			},
+		);
 	}
 
 	cancelKiroLogin(sessionId: string): Promise<KiroLoginCancelResponse> {

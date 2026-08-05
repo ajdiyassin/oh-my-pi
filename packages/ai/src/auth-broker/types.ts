@@ -146,9 +146,34 @@ export interface KiroLoginStartResponse {
 	expiresAt: number;
 }
 
+/** POST /v1/login/kiro/:sessionId/selection request body. */
+export interface KiroLoginSelectionRequest {
+	promptId: string;
+	optionId: string;
+}
+
+/** POST /v1/login/kiro/:sessionId/selection response body. */
+export interface KiroLoginSelectionResponse {
+	ok: true;
+}
+
+/** One opaque, session-local option exposed while the broker waits for a Kiro choice. */
+export interface KiroLoginSelectionOption {
+	optionId: string;
+	label: string;
+	description?: string;
+}
+
 /** GET /v1/login/kiro/:sessionId response body. */
 export type KiroLoginStatusResponse =
 	| { status: "pending" }
+	| {
+			status: "selection_required";
+			promptId: string;
+			message: string;
+			options: readonly KiroLoginSelectionOption[];
+			defaultOptionId?: string;
+	  }
 	| { status: "complete"; identity: OAuthLoginIdentity }
 	| { status: "error"; message: string };
 

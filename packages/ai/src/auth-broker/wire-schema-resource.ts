@@ -39,6 +39,8 @@ import type {
 	HealthzResponse,
 	KiroLoginCancelResponse,
 	KiroLoginDefaultsResponse,
+	KiroLoginSelectionRequest,
+	KiroLoginSelectionResponse,
 	KiroLoginStartRequest,
 	KiroLoginStartResponse,
 	KiroLoginStatusResponse,
@@ -89,6 +91,8 @@ export interface AuthBrokerWireSchemas {
 	readonly kiroLoginDefaultsResponseSchema: Type<KiroLoginDefaultsResponse>;
 	readonly kiroLoginStartRequestSchema: Type<KiroLoginStartRequest>;
 	readonly kiroLoginStartResponseSchema: Type<KiroLoginStartResponse>;
+	readonly kiroLoginSelectionRequestSchema: Type<KiroLoginSelectionRequest>;
+	readonly kiroLoginSelectionResponseSchema: Type<KiroLoginSelectionResponse>;
 	readonly kiroLoginStatusResponseSchema: Type<KiroLoginStatusResponse>;
 	readonly kiroLoginCancelResponseSchema: Type<KiroLoginCancelResponse>;
 }
@@ -512,10 +516,38 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"orgName?": "string",
 	});
 
+	const kiroLoginSelectionOptionSchema = type({
+		"+": "reject",
+		optionId: type("string").atLeastLength(1),
+		label: type("string").atLeastLength(1),
+		"description?": "string",
+	});
+
+	const kiroLoginSelectionRequestSchema = type({
+		"+": "reject",
+		promptId: type("string").atLeastLength(1),
+		optionId: type("string").atLeastLength(1),
+	});
+
+	const kiroLoginSelectionResponseSchema = type({
+		"+": "reject",
+		ok: "true",
+	});
+
 	const kiroLoginStatusResponseSchema = type({
 		"+": "reject",
 		status: "'pending'",
 	})
+		.or(
+			type({
+				"+": "reject",
+				status: "'selection_required'",
+				promptId: type("string").atLeastLength(1),
+				message: "string",
+				options: kiroLoginSelectionOptionSchema.array(),
+				"defaultOptionId?": "string",
+			}),
+		)
 		.or(
 			type({
 				"+": "reject",
@@ -571,6 +603,8 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		kiroLoginDefaultsResponseSchema,
 		kiroLoginStartRequestSchema,
 		kiroLoginStartResponseSchema,
+		kiroLoginSelectionRequestSchema,
+		kiroLoginSelectionResponseSchema,
 		kiroLoginStatusResponseSchema,
 		kiroLoginCancelResponseSchema,
 	};

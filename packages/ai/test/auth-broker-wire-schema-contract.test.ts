@@ -114,6 +114,8 @@ const schemaNames = [
 	"kiroLoginDefaultsResponseSchema",
 	"kiroLoginStartRequestSchema",
 	"kiroLoginStartResponseSchema",
+	"kiroLoginSelectionRequestSchema",
+	"kiroLoginSelectionResponseSchema",
 	"kiroLoginStatusResponseSchema",
 	"kiroLoginCancelResponseSchema",
 	"usageResponseSchema",
@@ -161,6 +163,8 @@ const validSamples: Record<SchemaName, unknown> = {
 		userCode: "ABCD-EFGH",
 		expiresAt: 5_000,
 	},
+	kiroLoginSelectionRequestSchema: { promptId: "prompt-id", optionId: "opaque-option-id" },
+	kiroLoginSelectionResponseSchema: { ok: true },
 	kiroLoginStatusResponseSchema: { status: "complete", identity: { type: "oauth", accountId: "account" } },
 	kiroLoginCancelResponseSchema: { ok: true },
 	usageResponseSchema: { generatedAt: 2_000, reports: [USAGE_REPORT] },
@@ -231,7 +235,7 @@ function reject(schema: unknown, input: unknown): void {
 }
 
 describe("auth-broker public wire schemas", () => {
-	test("exports all 36 real callable ArkType values with canonical behavior", () => {
+	test("exports all 38 real callable ArkType values with canonical behavior", () => {
 		expect(Object.keys(wireSchemas).sort()).toEqual([...schemaNames].sort());
 		for (const name of schemaNames) {
 			// biome-ignore lint/performance/noDynamicNamespaceImportAccess: this contract intentionally verifies the public namespace.

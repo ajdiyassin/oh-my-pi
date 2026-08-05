@@ -380,6 +380,27 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 					poll: async () => {
 						try {
 							const status = await this.#client.getKiroLoginStatus(started.sessionId, ctrl.signal);
+							if (status.status === "selection_required") {
+								if (!ctrl.onSelect) throw new AIError.OnPromptRequiredError(status.message);
+								const optionId = await ctrl.onSelect({
+									message: status.message,
+									options: status.options.map(option => ({
+										value: option.optionId,
+										label: option.label,
+										...(option.description ? { description: option.description } : {}),
+									})),
+									...(status.defaultOptionId ? { defaultValue: status.defaultOptionId } : {}),
+								});
+								if (!optionId.trim()) throw new AIError.OnPromptRequiredError(status.message);
+								throwIfKiroLoginCancelled(ctrl.signal);
+								await this.#client.selectKiroLoginOption(
+									started.sessionId,
+									{ promptId: status.promptId, optionId },
+									ctrl.signal,
+								);
+								throwIfKiroLoginCancelled(ctrl.signal);
+								return { status: "pending" as const };
+							}
 							if (status.status === "pending") return { status: "pending" as const };
 							if (status.status === "error") return { status: "failed" as const, message: status.message };
 							return { status: "complete" as const, value: status.identity };

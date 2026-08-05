@@ -15,6 +15,7 @@ import {
 } from "@oh-my-pi/pi-ai/auth-broker";
 import { snapshotResponseSchema } from "@oh-my-pi/pi-ai/auth-broker/wire-schemas";
 import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+import type { OAuthSelectPrompt } from "@oh-my-pi/pi-ai/registry/oauth/types";
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
 import { removeWithRetries } from "../../utils/src/temp";
 
@@ -153,6 +154,57 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 			orgId: profileArn,
 		});
 		clientStorage.close();
+		remoteStore.close();
+	});
+
+	test("RemoteAuthCredentialStore forwards local Kiro profile selection and resumes broker polling", async () => {
+		const selectedInternal = Promise.withResolvers<string>();
+		vi.spyOn(serverStorage!, "login").mockImplementation(async (_provider, callbacks) => {
+			callbacks.onAuth({
+				url: "https://device.example.test/verify",
+				userCode: "ABCD-EFGH",
+				expiresAt: Date.now() + 60_000,
+			});
+			const selected = await callbacks.onSelect?.({
+				message: "Select a Kiro profile",
+				options: [
+					{ value: "internal-profile-one", label: "Personal" },
+					{ value: "internal-profile-two", label: "Work" },
+				],
+				defaultValue: "1",
+			});
+			selectedInternal.resolve(selected ?? "");
+			return { type: "oauth", orgId: "internal-profile-two" };
+		});
+
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+		});
+		let profilePrompt: OAuthSelectPrompt | undefined;
+		const identity = await remoteStore.loginRemote("kiro", {
+			onAuth: () => {},
+			onPrompt: async prompt => {
+				if (prompt.message === "Enter Start URL") return "https://example.awsapps.com/start";
+				if (prompt.message === "Enter Region") return "us-east-1";
+				throw new Error(`unexpected prompt: ${prompt.message}`);
+			},
+			onSelect: async prompt => {
+				if (prompt.message === "Select Kiro login method") return "aws";
+				profilePrompt = prompt;
+				return prompt.options[1]?.value ?? "";
+			},
+			sleep: async () => {},
+		});
+
+		expect(profilePrompt?.options.map(option => option.label)).toEqual(["Personal", "Work"]);
+		expect(profilePrompt?.options[0]?.value).not.toBe("internal-profile-one");
+		expect(profilePrompt?.options[1]?.value).not.toBe("internal-profile-two");
+		expect(await selectedInternal.promise).toBe("internal-profile-two");
+		expect(identity).toEqual({ type: "oauth", orgId: "internal-profile-two" });
 		remoteStore.close();
 	});
 

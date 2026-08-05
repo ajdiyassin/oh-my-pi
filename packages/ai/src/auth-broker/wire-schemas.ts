@@ -43,6 +43,8 @@ export const {
 	kiroLoginDefaultsResponseSchema,
 	kiroLoginStartRequestSchema,
 	kiroLoginStartResponseSchema,
+	kiroLoginSelectionRequestSchema,
+	kiroLoginSelectionResponseSchema,
 	kiroLoginStatusResponseSchema,
 	kiroLoginCancelResponseSchema,
 } = wireSchemas;

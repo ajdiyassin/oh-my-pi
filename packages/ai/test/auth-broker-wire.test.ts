@@ -155,6 +155,54 @@ describe("auth-broker wire surface", () => {
 		expect(JSON.stringify(snapshotResult.snapshot)).not.toContain("must-not-leak");
 	});
 
+	test("persists Kiro prompt and registered-client cache across a broker store restart", async () => {
+		const cachePath = path.join(tempDir, "cache-restart.db");
+		const firstStore = await SqliteAuthCredentialStore.open(cachePath);
+		const promptDefaults = JSON.stringify({ startUrl: "https://example.awsapps.com/start", region: "eu-central-1" });
+		const registration = JSON.stringify({
+			registrationVersion: 1,
+			region: "eu-central-1",
+			flow: "device_code",
+			clientName: "Kiro CLI",
+			clientId: "client-fixture",
+			clientSecret: "client-secret-fixture",
+		});
+		firstStore.setCache(
+			"oauth:kiro:iam-identity-center:prompt-defaults",
+			promptDefaults,
+			Math.floor(Date.now() / 1000) + 3_600,
+		);
+		firstStore.setCache(
+			"oauth:kiro:iam-identity-center:registration:eu-central-1",
+			registration,
+			Math.floor(Date.now() / 1000) + 3_600,
+		);
+		firstStore.close();
+
+		const restartedStore = await SqliteAuthCredentialStore.open(cachePath);
+		const restartedStorage = new AuthStorage(restartedStore);
+		await restartedStorage.reload();
+		let restartedHandle: AuthBrokerServerHandle | undefined;
+		try {
+			restartedHandle = startAuthBroker({
+				storage: restartedStorage,
+				bind: "127.0.0.1:0",
+				bearerTokens: ["restart-bearer"],
+				disableRefresher: true,
+			});
+			const restartedClient = new AuthBrokerClient({ url: restartedHandle.url, token: "restart-bearer" });
+			expect(await restartedClient.fetchKiroLoginDefaults()).toEqual({
+				startUrl: "https://example.awsapps.com/start",
+				region: "eu-central-1",
+			});
+			expect(restartedStore.getCache("oauth:kiro:iam-identity-center:registration:eu-central-1")).toBe(registration);
+		} finally {
+			await restartedHandle?.close();
+			restartedStorage.close();
+			restartedStore.close();
+		}
+	});
+
 	test("creates, polls, and completes a broker-owned Kiro login session", async () => {
 		const complete = Promise.withResolvers<void>();
 		vi.spyOn(storage!, "login").mockImplementation(async (provider, callbacks) => {
@@ -202,6 +250,194 @@ describe("auth-broker wire surface", () => {
 			status = await client.getKiroLoginStatus(started.sessionId);
 		}
 		expect(status).toEqual({ status: "complete", identity: { type: "oauth", accountId: "broker-account" } });
+	});
+
+	test("publishes opaque profile choices and resumes only after selecting the second profile", async () => {
+		const selectedValue = Promise.withResolvers<string>();
+		vi.spyOn(storage!, "login").mockImplementation(async (_provider, callbacks) => {
+			callbacks.onAuth({
+				url: "https://device.example.test/verify",
+				userCode: "ABCD-EFGH",
+				expiresAt: Date.now() + 60_000,
+			});
+			const selected = await callbacks.onSelect?.({
+				message: "Select a Kiro profile",
+				options: [
+					{ value: "arn:aws:codewhisperer:us-east-1:account/profile-one", label: "Personal" },
+					{ value: "arn:aws:codewhisperer:eu-central-1:account/profile-two", label: "Work" },
+				],
+				defaultValue: "1",
+			});
+			selectedValue.resolve(selected ?? "");
+			return { type: "oauth", orgId: "profile-two" };
+		});
+
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const started = await client.startKiroLogin({
+			startUrl: "https://example.awsapps.com/start",
+			region: "us-east-1",
+		});
+		const pending = await client.getKiroLoginStatus(started.sessionId);
+		if (pending.status !== "selection_required") throw new Error("expected profile selection");
+		expect(pending.message).toBe("Select a Kiro profile");
+		expect(pending.options.map(option => option.label)).toEqual(["Personal", "Work"]);
+		expect(pending.options.map(option => option.optionId)).not.toEqual(["1", "2"]);
+		expect(JSON.stringify(pending)).not.toContain("arn:aws");
+
+		await expect(
+			client.selectKiroLoginOption(started.sessionId, {
+				promptId: "stale-prompt",
+				optionId: pending.options[1]!.optionId,
+			}),
+		).rejects.toMatchObject({ status: 400 });
+		await expect(
+			client.selectKiroLoginOption(started.sessionId, {
+				promptId: pending.promptId,
+				optionId: "unknown-option",
+			}),
+		).rejects.toMatchObject({ status: 400 });
+
+		await expect(
+			client.selectKiroLoginOption(started.sessionId, {
+				promptId: pending.promptId,
+				optionId: pending.options[1]!.optionId,
+			}),
+		).resolves.toEqual({ ok: true });
+		expect(await selectedValue.promise).toBe("arn:aws:codewhisperer:eu-central-1:account/profile-two");
+
+		let status = await client.getKiroLoginStatus(started.sessionId);
+		for (let attempt = 0; attempt < 20 && status.status === "pending"; attempt += 1) {
+			await Bun.sleep(5);
+			status = await client.getKiroLoginStatus(started.sessionId);
+		}
+		expect(status).toEqual({ status: "complete", identity: { type: "oauth", orgId: "profile-two" } });
+		await expect(
+			client.selectKiroLoginOption(started.sessionId, {
+				promptId: pending.promptId,
+				optionId: pending.options[1]!.optionId,
+			}),
+		).rejects.toMatchObject({ status: 409 });
+	});
+
+	test("rejects a pending profile waiter on cancellation without retaining a credential", async () => {
+		const selectionRejected = Promise.withResolvers<unknown>();
+		vi.spyOn(storage!, "login").mockImplementation(async (_provider, callbacks) => {
+			callbacks.onAuth({
+				url: "https://device.example.test/verify",
+				userCode: "ABCD-EFGH",
+				expiresAt: Date.now() + 60_000,
+			});
+			try {
+				await callbacks.onSelect?.({
+					message: "Select a Kiro profile",
+					options: [
+						{ value: "internal-profile-one", label: "Personal" },
+						{ value: "internal-profile-two", label: "Work" },
+					],
+				});
+			} catch (error) {
+				selectionRejected.resolve(error);
+				throw error;
+			}
+			return { type: "oauth", orgId: "internal-profile-two" };
+		});
+
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const started = await client.startKiroLogin({
+			startUrl: "https://example.awsapps.com/start",
+			region: "us-east-1",
+		});
+		const status = await client.getKiroLoginStatus(started.sessionId);
+		expect(status.status).toBe("selection_required");
+		expect(await client.cancelKiroLogin(started.sessionId)).toEqual({ ok: true });
+		expect(await selectionRejected.promise).toBeInstanceOf(Error);
+		await expect(client.getKiroLoginStatus(started.sessionId)).rejects.toMatchObject({ status: 404 });
+		expect(storage!.listStoredCredentials("kiro")).toEqual([]);
+	});
+
+	test("expires a pending profile waiter and publishes an error state", async () => {
+		const selectionRejected = Promise.withResolvers<unknown>();
+		vi.spyOn(storage!, "login").mockImplementation(async (_provider, callbacks) => {
+			callbacks.onAuth({
+				url: "https://device.example.test/verify",
+				userCode: "ABCD-EFGH",
+				expiresAt: Date.now() + 25,
+			});
+			try {
+				await callbacks.onSelect?.({
+					message: "Select a Kiro profile",
+					options: [
+						{ value: "internal-profile-one", label: "Personal" },
+						{ value: "internal-profile-two", label: "Work" },
+					],
+				});
+			} catch (error) {
+				selectionRejected.resolve(error);
+				throw error;
+			}
+			return { type: "oauth", orgId: "internal-profile-two" };
+		});
+
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const started = await client.startKiroLogin({
+			startUrl: "https://example.awsapps.com/start",
+			region: "us-east-1",
+		});
+		expect((await client.getKiroLoginStatus(started.sessionId)).status).toBe("selection_required");
+		await Bun.sleep(60);
+		const expired = await client.getKiroLoginStatus(started.sessionId);
+		expect(expired).toEqual({ status: "error", message: "Kiro login failed; run login again." });
+		expect(await selectionRejected.promise).toBeInstanceOf(Error);
+	});
+
+	test("disconnecting during selection submission rejects the waiter and removes the session", async () => {
+		const selectionRejected = Promise.withResolvers<unknown>();
+		vi.spyOn(storage!, "login").mockImplementation(async (_provider, callbacks) => {
+			callbacks.onAuth({
+				url: "https://device.example.test/verify",
+				userCode: "ABCD-EFGH",
+				expiresAt: Date.now() + 60_000,
+			});
+			try {
+				await callbacks.onSelect?.({
+					message: "Select a Kiro profile",
+					options: [
+						{ value: "internal-profile-one", label: "Personal" },
+						{ value: "internal-profile-two", label: "Work" },
+					],
+				});
+			} catch (error) {
+				selectionRejected.resolve(error);
+				throw error;
+			}
+			return { type: "oauth", orgId: "internal-profile-two" };
+		});
+
+		const client = new AuthBrokerClient({ url: handle!.url, token });
+		const started = await client.startKiroLogin({
+			startUrl: "https://example.awsapps.com/start",
+			region: "us-east-1",
+		});
+		const status = await client.getKiroLoginStatus(started.sessionId);
+		if (status.status !== "selection_required") throw new Error("expected profile selection");
+
+		const disconnect = new AbortController();
+		const request = fetch(`${handle!.url}/v1/login/kiro/${started.sessionId}/selection`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode("{"));
+				},
+			}),
+			signal: disconnect.signal,
+			duplex: "half",
+		});
+		await Bun.sleep(10);
+		disconnect.abort();
+		await request.catch(() => {});
+		expect(await selectionRejected.promise).toBeInstanceOf(Error);
+		await expect(client.getKiroLoginStatus(started.sessionId)).rejects.toMatchObject({ status: 404 });
 	});
 
 	test("cancels a broker-owned Kiro login session on DELETE", async () => {
