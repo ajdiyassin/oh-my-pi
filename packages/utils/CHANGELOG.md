@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added bounded response-byte reading for transports that need a memory-limited error prefix without requiring valid JSON.
+
 ## [17.2.9] - 2026-08-05
 
 ### Added
@@ -12,9 +16,6 @@
 
 - Honor the current process `PATH` when caching executable lookups, preventing stale tool paths after environment reloads.
 - Parsed account-cap reset windows such as “Your limit will reset in 13 minutes” so credential backoff honors the provider's full reset duration.
-### Added
-
-- Added bounded response-byte reading for transports that need a memory-limited error prefix without requiring valid JSON.
 
 ## [17.2.6] - 2026-08-03
 

@@ -308,6 +308,10 @@ jobs:
            env:
               OMP_TEST_CONCURRENCY: "4"
            run: |
+              # Keep the native Kiro auth/broker/runtime contracts visible as an
+              # explicit deterministic regression gate in addition to the full
+              # workspace bucket below. These fixtures make no provider requests.
+              bun run ci:test:kiro
               bun run ci:test:ts:workspace
               # Not `test:scripts`: scripts/musl-release.test.ts fails on main
               # (its install.sh smoke-check executes a fake binary), so running

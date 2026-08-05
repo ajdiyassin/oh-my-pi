@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added native Kiro AWS device/API-key login UX, broker-hosted authentication with explicit profile selection, credential-scoped model discovery, and deferred Builder ID handling.
+
+### Fixed
+
+- Fixed Kiro model-cache restoration and usage/account labeling so selected profiles and API endpoints remain isolated and privacy-safe.
+- Fixed login cancellation, empty/Builder outcomes, and provider registration boundaries so no false success or legacy Kiro shadow registration is reported.
+
 ## [17.2.9] - 2026-08-05
 
 ### Breaking Changes
@@ -59,17 +68,6 @@
 ### Changed
 
 - Upgraded the bundled omptype schema engine: intersection and pipe operators, bigint and RegExp literals in the string DSL, Standard Schema V1 interop, JSON Schema import via fromJsonSchema(), and richer union/collection error reporting.
-### Added
-
-- Added the Kiro login flow to the interactive UI with AWS device login, API-key login, broker-hosted authentication, and an explicit deferred Builder ID option.
-
-### Fixed
-
-- Fixed usage tombstone matching to keep same-email or same-account records visible when they belong to different organizations, while preserving safe same-org and org-only matching.
-- Isolated extension provider registration failures so one invalid registration no longer prevents later providers from loading in CLI or session initialization paths.
-- Fixed Kiro model discovery cache restoration to resolve the selected credential before reading cached models, isolating catalogs by profile or API endpoint and rejecting unsafe bare-provider rows.
-- Prevented legacy extensions from mutating provider registrations before a native Kiro shadow-registration error is reported.
-
 ## [17.2.7] - 2026-08-03
 
 ### Changed

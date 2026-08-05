@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the native Kiro provider with AWS IAM Identity Center device login, API-key login, AWS EventStream transport, image/tool conversion, adaptive reasoning, profile-scoped discovery, and usage reporting.
+- Added broker-hosted Kiro login with durable cached defaults, explicit multi-profile selection, and broker-only refresh/registered-client state.
+- Reserved the native `kiro` API and OAuth identifiers so legacy extensions cannot shadow the built-in provider.
+
+### Fixed
+
+- Hardened Kiro registration caching, device polling, refresh-token omission fallback, endpoint persistence, cancellation, retry/replay boundaries, and semantic stream timeouts.
+- Redacted Kiro refresh and registered-client secrets from remote credential snapshots while preserving profile-scoped OAuth refresh behavior and privacy-safe usage identities.
+- Added a bounded, ANSI/control-free usage-report label projection for provider reports consumed by TUI and JSON output.
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed
@@ -12,17 +24,6 @@
 - Fixed OpenAI Codex usage telemetry blocking explicitly allowed ChatGPT Team credentials when a weekly `used_percent` rounded to 100, which could route multi-account sessions to an actually exhausted sibling instead ([#7617](https://github.com/can1357/oh-my-pi/issues/7617)).
 - Fixed OpenAI Codex GPT-5.x requests sending optional `reasoning.summary`, `reasoning.context`, and `text.verbosity` controls by default, reducing Codex `server_error` disconnects from unsupported request shapes. ([#4949](https://github.com/can1357/oh-my-pi/issues/4949))
 - Classified concurrent-request caps separately from quota exhaustion so they use a short retry backoff without burning a credential, and rotate credentials for account-scoped 403 caps such as Devin's overall message limit.
-### Added
-
-- Added capture-backed OAuth Kiro quota reporting with profile-scoped usage limits and privacy-safe metadata.
-- Added the native Kiro provider with AWS EventStream request/response transport, image and tool-call conversion, adaptive reasoning, retry/error classification, and public stream dispatch.
-- Reserved the native `kiro` API and OAuth identifiers so legacy extensions cannot shadow the built-in provider.
-- Added broker-hosted Kiro IAM Identity Center login, including device-code session status, cached login defaults, and broker-only storage for refresh and registered-client secrets.
-
-### Fixed
-
-- Hardened native Kiro stream handling for semantic output timeouts, context-overflow classification, supported user images, interleaved tool calls, malformed lifecycle events, and retry/replay boundaries.
-- Redacted Kiro refresh and registered-client secrets from remote credential snapshots while preserving profile-scoped OAuth refresh behavior and privacy-safe usage identities.
 
 ## [17.2.7] - 2026-08-03
 

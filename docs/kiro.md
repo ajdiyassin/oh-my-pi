@@ -4,6 +4,10 @@ Kiro is a native provider backed by the Kiro API (`kiro-api`). It supports AWS I
 
 For the general provider credential precedence and `/login` behavior, see [Providers](./providers.md). For remote credential storage, see [Auth Broker and Auth Gateway](./auth-broker-gateway.md).
 
+## Trust and credential boundaries
+
+OMP's direct Kiro provider is a separate trust boundary: after login or API-key resolution, the selected bearer/key is sent directly to the Kiro AWS management/runtime endpoints required for discovery, inference, and (for OAuth) usage. OMP does not import, synchronize, or read credentials from the Kiro CLI or Kiro IDE. Broker mode changes the storage boundary, not the provider contract: refresh tokens and registered-client secrets stay on the broker, while the client receives only redacted snapshots, status, and the selected identity.
+
 ## Quick start
 
 1. Start OMP and run `/login kiro`.
@@ -80,12 +84,15 @@ The Kiro broker routes are:
 
 - `GET /v1/login/kiro/defaults` — read cached Start URL/region defaults.
 - `POST /v1/login/kiro` — start an AWS device-login session and return the verification URL, user code, and expiry.
-- `GET /v1/login/kiro/:sessionId` — poll for `pending`, `complete`, or `error`.
+- `GET /v1/login/kiro/:sessionId` — poll for `pending`, `selection_required`, `complete`, or `error`. A `selection_required` status contains opaque, session-local option IDs; it never contains the real profile ARN or account ID.
+- `POST /v1/login/kiro/:sessionId/selection` — submit the selected opaque option ID with its prompt ID, then resume the device flow.
 - `DELETE /v1/login/kiro/:sessionId` — cancel an in-progress session.
 
 Refresh tokens, Kiro registered-client IDs/secrets, and other Kiro refresh state remain on the broker. They are redacted from snapshots sent to clients. A broker client cannot use a remote Kiro login for arbitrary providers; the remote login route is intentionally Kiro-specific. `omp auth-broker login kiro` can also be run on the broker host for a local broker-side login.
 
 A broker allows only a bounded number of concurrent Kiro login sessions. If a session expires, is cancelled, or the broker reports that it could not start the flow, run `/login kiro` again.
+
+The broker stores validated Start URL/Region defaults and registered-client metadata in its durable SQLite OAuth cache. They survive client reconnects and broker restarts when the broker database is retained; the client-side cache is not the source of truth.
 
 ## Builder, GitHub, and Google login
 
