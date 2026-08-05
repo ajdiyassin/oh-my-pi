@@ -26,4 +26,24 @@ describe("OAuth device-code polling", () => {
 			}),
 		).rejects.toThrow("Device flow timed out");
 	});
+	it("stops polling immediately when the caller cancels during the wait", async () => {
+		const controller = new AbortController();
+		let polls = 0;
+		await expect(
+			pollOAuthDeviceCodeFlow({
+				expiresInSeconds: 60,
+				intervalSeconds: 1,
+				waitBeforeFirstPoll: true,
+				signal: controller.signal,
+				sleep: async () => {
+					controller.abort();
+				},
+				poll: () => {
+					polls += 1;
+					return { status: "pending" };
+				},
+			}),
+		).rejects.toThrow("Login cancelled");
+		expect(polls).toBe(0);
+	});
 });

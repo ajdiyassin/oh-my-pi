@@ -113,6 +113,46 @@ describe("Kiro request transformation", () => {
 		expect(historicalResult?.toolUseId).toBe(historicalAssistant?.toolUses?.[0]?.toolUseId);
 	});
 
+	test("uses the continuation prompt for image-only current turns", () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+					timestamp: 0,
+				},
+			],
+		};
+
+		const current = transformKiroRequest(createModel(), context).conversationState.currentMessage.userInputMessage;
+		expect(current.content).toBe("Please proceed with the task.");
+		expect(current.images).toEqual([{ format: "png", source: { bytes: "aGVsbG8=" } }]);
+	});
+
+	test("uses the continuation prompt when the previous message is assistant-last", () => {
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "Start", timestamp: 0 },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "The first answer" }],
+					api: "kiro-api",
+					provider: "kiro",
+					model: "kiro-test-model",
+					usage: zeroUsage,
+					stopReason: "stop",
+					timestamp: 1,
+				},
+			],
+		};
+
+		const request = transformKiroRequest(createModel(), context);
+		expect(request.conversationState.currentMessage.userInputMessage.content).toBe("Please proceed with the task.");
+		expect(request.conversationState.history?.at(-1)?.assistantResponseMessage?.content).toContain(
+			"The first answer",
+		);
+	});
+
 	test("uses the continuation prompt when the current user content is empty", () => {
 		const context: Context = {
 			messages: [{ role: "user", content: " \t\n", timestamp: 0 }],

@@ -2,8 +2,8 @@
  * Lazy provider module loading.
  *
  * Most provider modules are loaded only when their stream function is first
- * called. Kiro is statically linked but still uses the same lazy-stream seam so
- * its provider-specific timeout handling remains consistent.
+ * called. Kiro uses the same cached lazy-stream seam so its provider-specific
+ * timeout handling remains consistent without loading its runtime module at startup.
  */
 
 import * as AIError from "../error";
@@ -33,7 +33,6 @@ import type { DevinOptions } from "./devin";
 import type { GoogleOptions } from "./google";
 import type { GoogleGeminiCliOptions } from "./google-gemini-cli";
 import type { GoogleVertexOptions } from "./google-vertex";
-import { streamKiro as streamKiroProvider } from "./kiro/index";
 import type { OllamaChatOptions } from "./ollama";
 import type { OpenAICodexResponsesOptions } from "./openai-codex-responses";
 import type { OpenAICompletionsOptions } from "./openai-completions";
@@ -148,6 +147,7 @@ let azureOpenAIResponsesProviderModulePromise: Promise<LazyProviderModule<"azure
 let googleProviderModulePromise: Promise<LazyProviderModule<"google-generative-ai">> | undefined;
 let googleGeminiCliProviderModulePromise: Promise<LazyProviderModule<"google-gemini-cli">> | undefined;
 let googleVertexProviderModulePromise: Promise<LazyProviderModule<"google-vertex">> | undefined;
+let kiroProviderModulePromise: Promise<LazyProviderModule<"kiro-api">> | undefined;
 let openAICodexResponsesProviderModulePromise: Promise<LazyProviderModule<"openai-codex-responses">> | undefined;
 let openAICompletionsProviderModulePromise: Promise<LazyProviderModule<"openai-completions">> | undefined;
 let openAIResponsesProviderModulePromise: Promise<LazyProviderModule<"openai-responses">> | undefined;
@@ -387,7 +387,10 @@ function loadGoogleVertexProviderModule(): Promise<LazyProviderModule<"google-ve
 }
 
 function loadKiroProviderModule(): Promise<LazyProviderModule<"kiro-api">> {
-	return Promise.resolve({ stream: streamKiroProvider });
+	kiroProviderModulePromise ||= import("./kiro/index").then(module => ({
+		stream: module.streamKiro,
+	}));
+	return kiroProviderModulePromise;
 }
 
 function loadOpenAICodexResponsesProviderModule(): Promise<LazyProviderModule<"openai-codex-responses">> {

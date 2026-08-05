@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
+import { sanitizeUsageReport } from "@oh-my-pi/pi-ai/usage";
 import {
 	buildRedactionMap,
 	collectUnreportedAccounts,
@@ -266,6 +267,37 @@ describe("formatUsageBreakdown", () => {
 		{ provider: "anthropic", type: "oauth", email: "dummy.secondary@example.test" },
 		{ provider: "cerebras", type: "api_key" },
 	];
+
+	it("sanitizes hostile provider labels for both TUI and JSON report projections", () => {
+		const hostile: UsageReport = {
+			provider: "anthropic",
+			fetchedAt: Date.now(),
+			metadata: {
+				email: "account\u001b[31m\nname",
+				subscriptionTitle: "Pro\tTier",
+			},
+			limits: [
+				{
+					id: "credit\u001b[31m\nmonthly",
+					label: "credit\u001b[31m\nmonthly",
+					scope: { provider: "anthropic", tier: "Tier\u0001Name", windowId: "month\u001b" },
+					window: { id: "month", label: "Month\nWindow", resetLabel: "resets\t" },
+					amount: { unit: "unknown", used: 1, limit: 2 },
+					notes: ["note\u001b[32m\nvalue"],
+				},
+			],
+		};
+
+		const safe = sanitizeUsageReport(hostile);
+		const rendered = formatUsageBreakdown([hostile], [], Date.now());
+		expect(rendered).not.toContain("\u001b");
+		expect(rendered).not.toContain("\u0001");
+		expect(JSON.stringify(safe)).not.toContain("\u001b");
+		expect(JSON.stringify(safe)).not.toContain("\u0001");
+		expect(safe.limits[0]?.label).toBe("credit monthly");
+		expect(safe.limits[0]?.window?.label).toBe("Month Window");
+		expect(safe.limits[0]?.notes).toEqual(["note value"]);
+	});
 
 	it("renders used-only USD spend without fabricating quota data", () => {
 		const spendReport = makeReport("anthropic", "spend@example.test", [

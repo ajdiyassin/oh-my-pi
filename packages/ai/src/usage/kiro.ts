@@ -1,7 +1,6 @@
 import { kiroManagementRequest } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import { extractKiroProfileSegment, parseKiroProfileArn } from "@oh-my-pi/pi-catalog/wire/kiro";
-import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
 import type {
 	UsageAmount,
 	UsageFetchContext,
@@ -12,6 +11,7 @@ import type {
 	UsageStatus,
 	UsageUnit,
 } from "../usage";
+import { sanitizeUsageLabel } from "../usage";
 import { isRecord } from "../utils";
 
 /**
@@ -72,23 +72,13 @@ function buildAmount(used: number | undefined, limit: number | undefined, unit: 
 	};
 }
 
-function sanitizeKiroDisplayText(value: unknown, fallback: string): string {
-	const safeFallback = sanitizeText(fallback).replace(/\s+/g, " ").trim().slice(0, 128);
-	if (typeof value !== "string") return safeFallback;
-	const sanitized = sanitizeText(value).replace(/\s+/g, " ").trim().slice(0, 128);
-	return sanitized || safeFallback;
-}
-
 /**
  * Overage/bonus notes are emitted only from values the response actually
  * reported, so a display layer never shows an inferred billing figure.
  */
 function buildNotes(entry: Record<string, unknown>, overageStatus: string | undefined): string[] {
 	const notes: string[] = [];
-	const unitLabel = sanitizeKiroDisplayText(
-		entry.displayNamePlural,
-		sanitizeKiroDisplayText(entry.displayName, "credits"),
-	);
+	const unitLabel = sanitizeUsageLabel(entry.displayNamePlural, sanitizeUsageLabel(entry.displayName, "credits"));
 
 	const overages = preciseNumber(entry, "currentOverages");
 	const overageCap = preciseNumber(entry, "overageCap");
@@ -98,7 +88,7 @@ function buildNotes(entry: Record<string, unknown>, overageStatus: string | unde
 
 	const charges = toNumber(entry.overageCharges);
 	if (charges !== undefined && charges > 0) {
-		const currency = sanitizeKiroDisplayText(entry.currency, "");
+		const currency = sanitizeUsageLabel(entry.currency, "");
 		notes.push(currency ? `overage charges ${charges} ${currency}` : `overage charges ${charges}`);
 	}
 
@@ -114,7 +104,7 @@ function buildNotes(entry: Record<string, unknown>, overageStatus: string | unde
 	if (Array.isArray(entry.overageCredits) && entry.overageCredits.length > 0) {
 		notes.push(`${entry.overageCredits.length} overage credit${entry.overageCredits.length === 1 ? "" : "s"}`);
 	}
-	return notes.map(note => sanitizeKiroDisplayText(note, ""));
+	return notes.map(note => sanitizeUsageLabel(note, ""));
 }
 
 function buildLimit(
@@ -131,7 +121,7 @@ function buildLimit(
 	if (used === undefined && limit === undefined) return null;
 
 	const resourceType = typeof entry.resourceType === "string" ? entry.resourceType : undefined;
-	const safeResourceType = sanitizeKiroDisplayText(resourceType, "");
+	const safeResourceType = sanitizeUsageLabel(resourceType, "");
 	const unit = usageUnit(resourceType);
 	const amount = buildAmount(used, limit, unit);
 	const id = safeResourceType.toLowerCase() || `resource-${index}`;
@@ -141,9 +131,9 @@ function buildLimit(
 
 	return {
 		id,
-		label: sanitizeKiroDisplayText(
+		label: sanitizeUsageLabel(
 			entry.displayNamePlural,
-			sanitizeKiroDisplayText(entry.displayName, safeResourceType || "Usage"),
+			sanitizeUsageLabel(entry.displayName, safeResourceType || "Usage"),
 		),
 		scope: {
 			provider: params.provider,
@@ -192,18 +182,16 @@ async function fetchKiroUsage(params: UsageFetchParams, ctx: UsageFetchContext):
 	}
 
 	const subscription = isRecord(payload.subscriptionInfo) ? payload.subscriptionInfo : undefined;
-	const planTitle = subscription
-		? sanitizeKiroDisplayText(subscription.subscriptionTitle, "") || undefined
-		: undefined;
+	const planTitle = subscription ? sanitizeUsageLabel(subscription.subscriptionTitle, "") || undefined : undefined;
 	const overageConfiguration = isRecord(payload.overageConfiguration) ? payload.overageConfiguration : undefined;
 	const overageStatus =
 		overageConfiguration && typeof overageConfiguration.overageStatus === "string"
-			? sanitizeKiroDisplayText(overageConfiguration.overageStatus, "") || undefined
+			? sanitizeUsageLabel(overageConfiguration.overageStatus, "") || undefined
 			: undefined;
 	const fallbackReset = resetMillis(payload.nextDateReset);
 	// Display-safe quota identity. The full ARN embeds the AWS account id and
 	// never leaves this function.
-	const profileSegment = sanitizeKiroDisplayText(extractKiroProfileSegment(parsed.profileArn), "");
+	const profileSegment = sanitizeUsageLabel(extractKiroProfileSegment(parsed.profileArn), "");
 	if (!profileSegment) return null;
 
 	const limits = breakdown

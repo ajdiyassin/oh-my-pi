@@ -291,6 +291,119 @@ describe("Kiro authentication", () => {
 		expect(secondRequests).not.toContain("https://oidc.eu-west-1.amazonaws.com/client/register");
 	});
 
+	it("treats a registered client with 59 seconds left as expired but reuses one with 61 seconds left", async () => {
+		const run = async (remainingMs: number, expectedRegistrations: number): Promise<void> => {
+			const { cache } = memoryCache();
+			cache.set(
+				"oauth:kiro:iam-identity-center:registration:us-east-1",
+				JSON.stringify({
+					registrationVersion: 1,
+					region: "us-east-1",
+					flow: "device_code",
+					clientName: "Kiro CLI",
+					scopes: [...KIRO_IDENTITY_CENTER_SCOPES],
+					clientId: "cached-client",
+					clientSecret: "cached-secret",
+					clientSecretExpiresAt: Date.now() + remainingMs,
+					tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				}),
+				Math.floor(Date.now() / 1000) + 3_600,
+			);
+			const requests: string[] = [];
+			let registrationRequests = 0;
+			const profiles = profileResponses();
+			const fetch: FetchImpl = async input => {
+				const url = String(input);
+				requests.push(url);
+				if (url.endsWith("/client/register")) {
+					registrationRequests += 1;
+					return json(registeredClient());
+				}
+				if (url.endsWith("/device_authorization")) return json(deviceAuthorization());
+				if (url.endsWith("/token")) {
+					return json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 });
+				}
+				return url.includes("management")
+					? (profiles.shift() ?? json({ profiles: [] }))
+					: json({ error: "unexpected request" }, 500);
+			};
+			await loginKiroDevice(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					fetch,
+					cache,
+					sleep: async () => {},
+				},
+				{ region: "us-east-1", startUrl: "https://example.awsapps.com/start" },
+			);
+			expect(registrationRequests).toBe(expectedRegistrations);
+		};
+
+		await run(59_000, 1);
+		await run(61_000, 0);
+	});
+
+	it("limits registration, device authorization, and polling transport retries to three attempts", async () => {
+		const cachedClient = (cache: OAuthLoginCache): void => {
+			cache.set(
+				"oauth:kiro:iam-identity-center:registration:us-east-1",
+				JSON.stringify({
+					registrationVersion: 1,
+					region: "us-east-1",
+					flow: "device_code",
+					clientName: "Kiro CLI",
+					scopes: [...KIRO_IDENTITY_CENTER_SCOPES],
+					clientId: "cached-client",
+					clientSecret: "cached-secret",
+					clientSecretExpiresAt: Date.now() + 3_600_000,
+					tokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+				}),
+				Math.floor(Date.now() / 1000) + 3_600,
+			);
+		};
+		const run = async (failureTarget: "registration" | "device" | "poll"): Promise<number> => {
+			const { cache } = memoryCache();
+			if (failureTarget !== "registration") cachedClient(cache);
+			const counts = { registration: 0, device: 0, poll: 0 };
+			const profiles = profileResponses();
+			await loginKiroDevice(
+				{
+					onAuth: () => {},
+					onPrompt: async () => "",
+					cache,
+					fetch: async input => {
+						const url = String(input);
+						if (url.endsWith("/client/register")) {
+							counts.registration += 1;
+							if (failureTarget === "registration" && counts.registration < 3) return json({}, 503);
+							return json(registeredClient());
+						}
+						if (url.endsWith("/device_authorization")) {
+							counts.device += 1;
+							if (failureTarget === "device" && counts.device < 3) return json({}, 503);
+							return json(deviceAuthorization());
+						}
+						if (url.endsWith("/token")) {
+							counts.poll += 1;
+							if (failureTarget === "poll" && counts.poll < 3) throw new Error("temporary network failure");
+							return json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 });
+						}
+						return profiles.shift() ?? json({ profiles: [] });
+					},
+					sleep: async () => {},
+				},
+				{ region: "us-east-1", startUrl: "https://example.awsapps.com/start" },
+			);
+			expect(counts[failureTarget]).toBe(3);
+			return counts[failureTarget];
+		};
+
+		await run("registration");
+		await run("device");
+		await run("poll");
+	});
+
 	it("continues polling after RFC 8628 pending and slow_down responses", async () => {
 		const { cache } = memoryCache();
 		const responses: Response[] = [

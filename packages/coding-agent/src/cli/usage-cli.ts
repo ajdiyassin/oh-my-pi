@@ -12,6 +12,8 @@ import {
 	type AuthStorage,
 	type DisabledCredentialSummary,
 	resolveUsedFraction,
+	sanitizeUsageLabel,
+	sanitizeUsageReport,
 	type UsageHistoryEntry,
 	type UsageLimit,
 	type UsageReport,
@@ -61,7 +63,15 @@ function normalizeUsageOrgId(provider: string, orgId: string | undefined): strin
 
 function normalizeUsageAccount(account: UsageAccountIdentity): UsageAccountIdentity {
 	const orgId = normalizeUsageOrgId(account.provider, account.orgId);
-	return orgId === account.orgId ? account : { ...account, orgId };
+	return {
+		...account,
+		email: account.email === undefined ? undefined : sanitizeUsageLabel(account.email),
+		accountId: account.accountId === undefined ? undefined : sanitizeUsageLabel(account.accountId),
+		projectId: account.projectId === undefined ? undefined : sanitizeUsageLabel(account.projectId),
+		enterpriseUrl: account.enterpriseUrl === undefined ? undefined : sanitizeUsageLabel(account.enterpriseUrl),
+		orgId: orgId === undefined ? undefined : sanitizeUsageLabel(orgId),
+		orgName: account.orgName === undefined ? undefined : sanitizeUsageLabel(account.orgName),
+	};
 }
 
 /**
@@ -273,25 +283,26 @@ function renderBar(limit: UsageLimit): string {
 
 /** Append the window label when the limit label doesn't already carry it. */
 function limitTitle(limit: UsageLimit): string {
-	let label = limit.label;
-	const tier = limit.scope.tier;
+	let label = sanitizeUsageLabel(limit.label, "Limit");
+	const tier = limit.scope.tier ? sanitizeUsageLabel(limit.scope.tier) : undefined;
 	if (tier && !label.toLowerCase().includes(tier.toLowerCase())) label = `${label} (${tier})`;
 	const windowLabel = limit.window?.label ?? limit.scope.windowId;
 	if (!windowLabel) return label;
-	if (windowLabel.toLowerCase() === "quota window") return label;
-	if (label.toLowerCase().includes(windowLabel.toLowerCase())) return label;
-	return `${label} (${windowLabel})`;
+	const safeWindow = sanitizeUsageLabel(windowLabel, "Window");
+	if (safeWindow.toLowerCase() === "quota window") return label;
+	if (label.toLowerCase().includes(safeWindow.toLowerCase())) return label;
+	return `${label} (${safeWindow})`;
 }
 
 function reportAccountLabel(report: UsageReport, index: number): string {
 	const meta = report.metadata ?? {};
 	for (const key of ["email", "accountId", "projectId"] as const) {
 		const value = meta[key];
-		if (typeof value === "string" && value) return value;
+		if (typeof value === "string" && value) return sanitizeUsageLabel(value);
 	}
 	for (const limit of report.limits) {
 		const scoped = limit.scope.accountId ?? limit.scope.projectId;
-		if (scoped) return scoped;
+		if (scoped) return sanitizeUsageLabel(scoped);
 	}
 	return `account ${index + 1}`;
 }
@@ -393,14 +404,17 @@ export function collectUnreportedAccounts(
 /** Compose the account label from parts, masking each part individually so `--redact` cannot be bypassed by the composite string. */
 function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<string, string>): string {
 	if (account.type === "api_key") return "API key";
-	const base = account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? "OAuth account";
+	const base = sanitizeUsageLabel(
+		account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl,
+		"OAuth account",
+	);
 	const masked = redaction?.get(base) ?? base;
 	// orgId fallback: the uuid is the actual scoped identity; a token response
 	// can carry it without a display name, and two same-email rows must still
 	// be tellable apart.
 	const org = account.orgName ?? account.orgId;
 	if (!org || org === base) return masked;
-	return `${masked} · ${redaction?.get(org) ?? org}`;
+	return `${masked} · ${sanitizeUsageLabel(redaction?.get(org) ?? org)}`;
 }
 
 function formatAccountHeader(
@@ -412,15 +426,20 @@ function formatAccountHeader(
 	const status = aggregateStatus(report.limits);
 	const icon = STATUS_COLOR[status]("●");
 	const label = reportAccountLabel(report, index);
-	let header = `${icon} ${chalk.bold(redaction?.get(label) ?? label)}`;
+	let header = `${icon} ${chalk.bold(sanitizeUsageLabel(redaction?.get(label) ?? label))}`;
 	const metaOrgName = report.metadata?.orgName;
 	const metaOrgId = report.metadata?.orgId;
-	const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
+	const org =
+		typeof metaOrgName === "string" && metaOrgName
+			? sanitizeUsageLabel(metaOrgName)
+			: typeof metaOrgId === "string" && metaOrgId
+				? sanitizeUsageLabel(metaOrgId)
+				: undefined;
 	if (typeof org === "string" && org && org !== label) {
-		header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
+		header += chalk.dim(` · ${sanitizeUsageLabel(redaction?.get(org) ?? org)}`);
 	}
 	const planType = report.metadata?.planType;
-	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${planType}`);
+	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${sanitizeUsageLabel(planType)}`);
 	const savedResets = report.resetCredits?.availableCount ?? 0;
 	if (savedResets > 0) {
 		header += chalk.cyan(` · ✦ ${savedResets} saved reset${savedResets === 1 ? "" : "s"}`);
@@ -461,7 +480,7 @@ function formatLimitLine(limit: UsageLimit, labelWidth: number, nowMs: number): 
 		`      ${STATUS_COLOR[status]("●")} ${padded}  ${renderBar(limit)}  ${chalk.dim(details.join(" · "))}`,
 	];
 	if (limit.notes && limit.notes.length > 0) {
-		lines.push(`        ${chalk.dim(limit.notes.join(" · "))}`);
+		lines.push(`        ${chalk.dim(limit.notes.map(note => sanitizeUsageLabel(note)).join(" · "))}`);
 	}
 	return lines;
 }
@@ -616,11 +635,11 @@ function shortDisableCause(cause: string): string {
 
 /** Label for a disabled tombstone, masking each identity part under `--redact`. */
 function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: Map<string, string>): string {
-	const base = summary.email ?? summary.accountId ?? "OAuth account";
+	const base = sanitizeUsageLabel(summary.email ?? summary.accountId, "OAuth account");
 	const masked = redaction?.get(base) ?? base;
 	const org = summary.orgName ?? summary.orgId;
 	if (!org || org === base) return masked;
-	return `${masked} · ${redaction?.get(org) ?? org}`;
+	return `${masked} · ${sanitizeUsageLabel(redaction?.get(org) ?? org)}`;
 }
 
 /**
@@ -636,13 +655,14 @@ export function formatUsageBreakdown(
 	disabled: DisabledCredentialSummary[] = [],
 ): string {
 	const normalizedAccounts = accounts.map(normalizeUsageAccount);
+	const safeReports = reports.map(sanitizeUsageReport);
 	const reportsByProvider = new Map<string, UsageReport[]>();
-	for (const report of reports) {
+	for (const report of safeReports) {
 		const list = reportsByProvider.get(report.provider) ?? [];
 		list.push(report);
 		reportsByProvider.set(report.provider, list);
 	}
-	const unreported = collectUnreportedAccounts(reports, normalizedAccounts);
+	const unreported = collectUnreportedAccounts(safeReports, normalizedAccounts);
 	const unreportedByProvider = new Map<string, UsageAccountIdentity[]>();
 	for (const account of unreported) {
 		const list = unreportedByProvider.get(account.provider) ?? [];
@@ -662,7 +682,7 @@ export function formatUsageBreakdown(
 	].sort((a, b) => a.localeCompare(b));
 
 	const lines: string[] = [];
-	const latestFetchedAt = Math.max(0, ...reports.map(report => report.fetchedAt ?? 0));
+	const latestFetchedAt = Math.max(0, ...safeReports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? chalk.dim(` · fetched ${formatDuration(nowMs - latestFetchedAt)} ago`) : "";
 	lines.push(`${chalk.bold("Usage")}${headerSuffix}`);
 
@@ -746,10 +766,22 @@ interface HistoryAccount {
 	series: Map<string, HistorySeries>;
 }
 
+function sanitizeUsageHistoryEntry(entry: UsageHistoryEntry): UsageHistoryEntry {
+	return {
+		...entry,
+		accountKey: sanitizeUsageLabel(entry.accountKey, "account"),
+		email: entry.email === undefined ? undefined : sanitizeUsageLabel(entry.email),
+		accountId: entry.accountId === undefined ? undefined : sanitizeUsageLabel(entry.accountId),
+		limitId: sanitizeUsageLabel(entry.limitId, "limit"),
+		label: sanitizeUsageLabel(entry.label, "Limit"),
+		windowLabel: entry.windowLabel === undefined ? undefined : sanitizeUsageLabel(entry.windowLabel),
+	};
+}
+
 /** Mirror of {@link limitTitle} for history rows (no scope/tier available). */
 function historySeriesTitle(entry: UsageHistoryEntry): string {
-	const label = entry.label;
-	const windowLabel = entry.windowLabel;
+	const label = sanitizeUsageLabel(entry.label, "Limit");
+	const windowLabel = entry.windowLabel === undefined ? undefined : sanitizeUsageLabel(entry.windowLabel);
 	if (!windowLabel) return label;
 	if (windowLabel.toLowerCase() === "quota window") return label;
 	if (label.toLowerCase().includes(windowLabel.toLowerCase())) return label;
@@ -757,7 +789,7 @@ function historySeriesTitle(entry: UsageHistoryEntry): string {
 }
 
 function historyAccountLabel(entry: UsageHistoryEntry): string {
-	return entry.email ?? entry.accountId ?? entry.accountKey;
+	return sanitizeUsageLabel(entry.email ?? entry.accountId ?? entry.accountKey, "account");
 }
 
 function historyStatus(fraction: number | undefined, status: UsageHistoryEntry["status"]): LimitStatus {
@@ -810,8 +842,9 @@ export function formatUsageHistory(
 	nowMs: number,
 	redaction?: Map<string, string>,
 ): string {
+	const safeEntries = entries.map(sanitizeUsageHistoryEntry);
 	const providers = new Map<string, Map<string, HistoryAccount>>();
-	for (const entry of entries) {
+	for (const entry of safeEntries) {
 		let accounts = providers.get(entry.provider);
 		if (!accounts) {
 			accounts = new Map();
@@ -931,7 +964,8 @@ function redactReportForJson(
 	report: Omit<UsageReport, "raw">,
 	redaction: Map<string, string>,
 ): Omit<UsageReport, "raw"> {
-	let metadata = report.metadata;
+	const { raw: _raw, ...safeReport } = sanitizeUsageReport(report);
+	let metadata = safeReport.metadata;
 	if (metadata) {
 		metadata = { ...metadata };
 		for (const key of IDENTITY_METADATA_KEYS) {
@@ -939,7 +973,7 @@ function redactReportForJson(
 			if (typeof value === "string") metadata[key] = redaction.get(value) ?? value;
 		}
 	}
-	const limits = report.limits.map(limit => ({
+	const limits = safeReport.limits.map(limit => ({
 		...limit,
 		scope: {
 			...limit.scope,
@@ -948,7 +982,7 @@ function redactReportForJson(
 			orgId: maskIdentity(redaction, limit.scope.orgId),
 		},
 	}));
-	return { ...report, metadata, limits };
+	return { ...safeReport, metadata, limits };
 }
 
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
@@ -968,7 +1002,9 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const days = cmd.days !== undefined && Number.isFinite(cmd.days) && cmd.days > 0 ? cmd.days : 7;
 			const nowMs = Date.now();
 			const sinceMs = nowMs - days * 86_400_000;
-			const entries = authStorage.listUsageHistory({ sinceMs, provider: cmd.provider?.toLowerCase() });
+			const entries = authStorage
+				.listUsageHistory({ sinceMs, provider: cmd.provider?.toLowerCase() })
+				.map(sanitizeUsageHistoryEntry);
 			const redaction = cmd.redact ? buildRedactionMap(collectHistoryIdentityStrings(entries)) : undefined;
 			if (cmd.json) {
 				const masked = redaction
@@ -996,10 +1032,11 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 		const modelRegistry = new ModelRegistry(authStorage);
-		const reports =
+		const reports = (
 			(await authStorage.fetchUsageReports({
 				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),
-			})) ?? [];
+			})) ?? []
+		).map(sanitizeUsageReport);
 		// Reports are always fresh (broker-side fetch) but the account list can
 		// come from a disk-cached snapshot up to an hour old — revalidate so a
 		// just-logged-in (or just-rotated-identity) credential isn't rendered

@@ -5,6 +5,7 @@
  * and shared quotas across providers.
  */
 import { type } from "@oh-my-pi/omptype";
+import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
 import type { FetchImpl, Provider } from "./types";
 export type UsageUnit = "percent" | "tokens" | "requests" | "usd" | "minutes" | "bytes" | "unknown";
 
@@ -123,6 +124,61 @@ export interface UsageReport {
  * amount fields the provider populated. Precedence mirrors the usage UIs:
  * explicit fraction > used/limit > percent-unit used > inverted remaining.
  */
+export const USAGE_LABEL_MAX_LENGTH = 128;
+
+/**
+ * Normalize provider-controlled labels before they reach TUI, JSON, or history
+ * output. This is intentionally bounded and control/ANSI-free; identity values
+ * still need provider-specific privacy handling (for example Kiro profile ARN
+ * reduction) before calling this helper.
+ */
+export function sanitizeUsageLabel(value: unknown, fallback = ""): string {
+	const safeFallback = sanitizeText(fallback).replace(/\s+/g, " ").trim().slice(0, USAGE_LABEL_MAX_LENGTH);
+	if (typeof value !== "string") return safeFallback;
+	const sanitized = sanitizeText(value).replace(/\s+/g, " ").trim().slice(0, USAGE_LABEL_MAX_LENGTH);
+	return sanitized || safeFallback;
+}
+
+/** Sanitize the known display-bearing fields of a report while preserving its numeric shape. */
+export function sanitizeUsageReport(report: UsageReport): UsageReport {
+	const metadata = report.metadata
+		? Object.fromEntries(
+				Object.entries(report.metadata).map(([key, value]) => [
+					key,
+					typeof value === "string" ? sanitizeUsageLabel(value) : value,
+				]),
+			)
+		: undefined;
+	const limits = report.limits.map((limit, index) => ({
+		...limit,
+		id: sanitizeUsageLabel(limit.id, `limit-${index + 1}`),
+		label: sanitizeUsageLabel(limit.label, `Limit ${index + 1}`),
+		scope: Object.fromEntries(
+			Object.entries(limit.scope).map(([key, value]) => [
+				key,
+				typeof value === "string" ? sanitizeUsageLabel(value) : value,
+			]),
+		) as UsageLimit["scope"],
+		window: limit.window
+			? {
+					...limit.window,
+					id: sanitizeUsageLabel(limit.window.id, "window"),
+					label: sanitizeUsageLabel(limit.window.label, "Window"),
+					...(limit.window.resetLabel
+						? { resetLabel: sanitizeUsageLabel(limit.window.resetLabel, "resets") }
+						: {}),
+				}
+			: undefined,
+		notes: limit.notes?.map(note => sanitizeUsageLabel(note)).filter(Boolean),
+	}));
+	return {
+		...report,
+		metadata,
+		limits,
+		notes: report.notes?.map(note => sanitizeUsageLabel(note)).filter(Boolean),
+	};
+}
+
 export function resolveUsedFraction(limit: UsageLimit): number | undefined {
 	const amount = limit.amount;
 	if (amount.usedFraction !== undefined) return amount.usedFraction;
