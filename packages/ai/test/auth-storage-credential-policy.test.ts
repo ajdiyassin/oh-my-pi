@@ -4,7 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/registry/oauth";
-import type { OAuthCredentials, OAuthLoginCallbacks, ProviderLoginResult } from "@oh-my-pi/pi-ai/registry/oauth/types";
+import type {
+	OAuthCredentials,
+	OAuthLoginCache,
+	OAuthLoginCallbacks,
+	OAuthSelectPrompt,
+	ProviderLoginResult,
+} from "@oh-my-pi/pi-ai/registry/oauth/types";
 import { removeWithRetries } from "../../utils/src/temp";
 
 const SOURCE_ID = "auth-storage-credential-policy-test";
@@ -109,6 +115,51 @@ describe("AuthStorage credential login policy", () => {
 			orgId: "arn:aws:codewhisperer:us-east-1:123456789012:profile/selected",
 			orgName: "Selected profile",
 		});
+	});
+
+	it("forwards OAuth controls through the cache adapter and reports no identity for an empty login", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+		const selectionCalls: OAuthSelectPrompt[] = [];
+		let forwardedCache: OAuthLoginCache | undefined;
+		let sleepCalls = 0;
+		const progress: string[] = [];
+		unregisterOAuthProviders(SOURCE_ID);
+		registerOAuthProvider({
+			id: PROVIDER_ID,
+			name: "OAuth controls test provider",
+			sourceId: SOURCE_ID,
+			login: async callbacks => {
+				forwardedCache = callbacks.cache;
+				callbacks.cache?.set("oauth:test:defaults", "cached-value", Math.floor(Date.now() / 1000) + 60);
+				await callbacks.onSelect?.({
+					message: "Choose a test option",
+					options: [{ value: "one", label: "One" }],
+				});
+				await callbacks.sleep?.(0);
+				return "";
+			},
+		});
+
+		const identity = await authStorage.login(PROVIDER_ID, {
+			onAuth: () => {},
+			onProgress: message => progress.push(message),
+			onPrompt: async () => "",
+			onSelect: async prompt => {
+				selectionCalls.push(prompt);
+				return "one";
+			},
+			sleep: async () => {
+				sleepCalls += 1;
+			},
+		});
+
+		expect(identity).toBeUndefined();
+		expect(progress).toEqual([]);
+		expect(selectionCalls).toEqual([{ message: "Choose a test option", options: [{ value: "one", label: "One" }] }]);
+		expect(forwardedCache).toBeDefined();
+		expect(store.getCache("oauth:test:defaults")).toBe("cached-value");
+		expect(sleepCalls).toBe(1);
+		expect(store.listAuthCredentials(PROVIDER_ID)).toEqual([]);
 	});
 
 	it("keeps append as the default when a provider does not opt into replacement", async () => {
