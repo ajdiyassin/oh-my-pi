@@ -23,6 +23,12 @@ const REMOTE_OAUTH = {
 	clientId: "provider-client",
 };
 const REAL_OAUTH = { ...REMOTE_OAUTH, refresh: "real-refresh" };
+const KIRO_REAL_OAUTH = {
+	...REAL_OAUTH,
+	kiroClientId: "kiro-client",
+	kiroClientSecret: "kiro-secret",
+};
+const KIRO_REMOTE_OAUTH = { ...KIRO_REAL_OAUTH, refresh: "__remote__" };
 const API_KEY = { type: "api_key", key: "secret", source: "login" };
 const CREDENTIAL_ENTRY = {
 	id: 7,
@@ -105,6 +111,11 @@ const schemaNames = [
 	"snapshotStreamRemovedEventSchema",
 	"snapshotStreamEventSchema",
 	"healthzResponseSchema",
+	"kiroLoginDefaultsResponseSchema",
+	"kiroLoginStartRequestSchema",
+	"kiroLoginStartResponseSchema",
+	"kiroLoginStatusResponseSchema",
+	"kiroLoginCancelResponseSchema",
 	"usageResponseSchema",
 	"usageHistoryResponseSchema",
 	"clientUsageReportRequestSchema",
@@ -142,6 +153,16 @@ const validSamples: Record<SchemaName, unknown> = {
 	snapshotStreamRemovedEventSchema: STREAM_REMOVED,
 	snapshotStreamEventSchema: STREAM_ENTRY,
 	healthzResponseSchema: { ok: true, version: "contract" },
+	kiroLoginDefaultsResponseSchema: { startUrl: "https://example.awsapps.com/start", region: "us-east-1" },
+	kiroLoginStartRequestSchema: { startUrl: "https://example.awsapps.com/start", region: "us-east-1" },
+	kiroLoginStartResponseSchema: {
+		sessionId: "session-id",
+		url: "https://device.example.test/verify",
+		userCode: "ABCD-EFGH",
+		expiresAt: 5_000,
+	},
+	kiroLoginStatusResponseSchema: { status: "complete", identity: { type: "oauth", accountId: "account" } },
+	kiroLoginCancelResponseSchema: { ok: true },
 	usageResponseSchema: { generatedAt: 2_000, reports: [USAGE_REPORT] },
 	usageHistoryResponseSchema: {
 		generatedAt: 2_000,
@@ -210,7 +231,7 @@ function reject(schema: unknown, input: unknown): void {
 }
 
 describe("auth-broker public wire schemas", () => {
-	test("exports all 31 real callable ArkType values with canonical behavior", () => {
+	test("exports all 36 real callable ArkType values with canonical behavior", () => {
 		expect(Object.keys(wireSchemas).sort()).toEqual([...schemaNames].sort());
 		for (const name of schemaNames) {
 			// biome-ignore lint/performance/noDynamicNamespaceImportAccess: this contract intentionally verifies the public namespace.
@@ -224,6 +245,8 @@ describe("auth-broker public wire schemas", () => {
 	test("preserves credential extension and sentinel boundaries", () => {
 		expect(accept(wireSchemas.oauthCredentialSchema, REAL_OAUTH)).toEqual(REAL_OAUTH);
 		expect(accept(wireSchemas.remoteOauthCredentialSchema, REMOTE_OAUTH)).toEqual(REMOTE_OAUTH);
+		expect(accept(wireSchemas.oauthCredentialSchema, KIRO_REAL_OAUTH)).toEqual(KIRO_REAL_OAUTH);
+		reject(wireSchemas.remoteOauthCredentialSchema, KIRO_REMOTE_OAUTH);
 		reject(wireSchemas.oauthCredentialSchema, REMOTE_OAUTH);
 		reject(wireSchemas.remoteOauthCredentialSchema, REAL_OAUTH);
 		reject(wireSchemas.oauthCredentialSchema, { ...REAL_OAUTH, access: "" });

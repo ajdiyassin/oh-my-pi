@@ -378,10 +378,15 @@ export interface CheckCredentialsOptions {
 export const REMOTE_REFRESH_SENTINEL = "__remote__" as const;
 export type RemoteRefreshSentinel = typeof REMOTE_REFRESH_SENTINEL;
 
-/** OAuth credential with refresh token replaced by the broker sentinel. */
-export type RemoteOAuthCredential = Omit<OAuthCredential, "refresh"> & {
+/** OAuth credential with refresh token and Kiro registered-client secret omitted from broker snapshots. */
+export type RemoteOAuthCredential = Omit<OAuthCredential, "refresh" | "kiroClientSecret"> & {
 	refresh: RemoteRefreshSentinel;
 };
+
+export function redactRemoteOAuthCredential(credential: OAuthCredential): RemoteOAuthCredential {
+	const { refresh: _refresh, kiroClientSecret: _kiroClientSecret, ...withoutSecrets } = credential;
+	return { ...withoutSecrets, refresh: REMOTE_REFRESH_SENTINEL };
+}
 
 /** Discriminated credential payload as published by the broker. */
 export type SnapshotCredential = ApiKeyCredential | RemoteOAuthCredential;
@@ -575,6 +580,12 @@ export interface AuthCredentialStore {
 	 * {@link AuthStorage.invalidateCredentialMatching} fall back to `reload()`.
 	 */
 	markCredentialSuspect?(credentialId: number, opts?: { signal?: AbortSignal }): Promise<void>;
+	/**
+	 * Optional remote-owned login flow. The broker performs interactive provider
+	 * authentication and persists the resulting credential; the client receives
+	 * only the identity slice.
+	 */
+	loginRemote?(provider: OAuthProviderId, ctrl: OAuthLoginController): Promise<OAuthLoginIdentity | undefined>;
 	/**
 	 * Optional async write hook for upserting a single credential. When present,
 	 * `AuthStorage.#upsertOAuthCredential` routes through this instead of the
@@ -886,6 +897,11 @@ export interface OAuthLoginIdentity {
 	orgId?: string;
 	orgName?: string;
 }
+
+export type OAuthLoginController = OAuthController & {
+	onAuth: (info: OAuthAuthInfo) => void;
+	onPrompt: (prompt: OAuthPrompt) => Promise<string>;
+};
 
 export interface OAuthAccessFailure {
 	credentialId?: number;
@@ -2872,21 +2888,26 @@ export class AuthStorage {
 		return result;
 	}
 
+	getOAuthLoginCache(): OAuthLoginCache {
+		return {
+			get: (key, options) => this.#store.getCache(key, options),
+			set: (key, value, expiresAtSec) => this.#store.setCache(key, value, expiresAtSec),
+			deletePrefix: prefix => this.#store.deleteCachePrefix?.(prefix),
+		};
+	}
+
 	/**
 	 * Login to an OAuth provider. Resolves with the stored credential's
 	 * identity slice (or `undefined` when nothing was stored) so callers can
 	 * surface which account — and for Anthropic, which organization — the
 	 * login registered.
 	 */
-	async login(
-		provider: OAuthProviderId,
-		ctrl: OAuthController & {
-			/** onAuth is required by auth-storage but optional in OAuthController */
-			onAuth: (info: OAuthAuthInfo) => void;
-			/** onPrompt is required for some providers (github-copilot, openai-codex) */
-			onPrompt: (prompt: OAuthPrompt) => Promise<string>;
-		},
-	): Promise<OAuthLoginIdentity | undefined> {
+	async login(provider: OAuthProviderId, ctrl: OAuthLoginController): Promise<OAuthLoginIdentity | undefined> {
+		if (this.#store.loginRemote) {
+			const identity = await this.#store.loginRemote(provider, ctrl);
+			await this.reload();
+			return identity;
+		}
 		// Only paste-code providers (fixed non-loopback redirect, e.g. GitLab Duo
 		// Agent's vscode:// URI) get a default manual-code prompt. For loopback OAuth
 		// providers the `OAuthCallbackFlow` would otherwise race this readline prompt
@@ -2907,15 +2928,14 @@ export class AuthStorage {
 			onAuth: ctrl.onAuth,
 			onProgress: ctrl.onProgress,
 			onPrompt: ctrl.onPrompt,
+			onSelect: ctrl.onSelect,
 			onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
 			signal: ctrl.signal,
 			fetch: ctrl.fetch,
-			cache: {
-				get: (key, options) => this.#store.getCache(key, options),
-				set: (key, value, expiresAtSec) => this.#store.setCache(key, value, expiresAtSec),
-			} satisfies OAuthLoginCache,
+			cache: this.getOAuthLoginCache(),
 			sleep: ctrl.sleep,
 		});
+		if (result === undefined || result === "") return undefined;
 		const storeProvider = def.storeCredentialsAs ?? provider;
 		const replace = def.credentialPolicy === "replace";
 		const apiKeyResult = isApiKeyLoginResult(result);
@@ -6424,7 +6444,7 @@ export class AuthStorage {
 			for (const entry of stored) {
 				const credential = entry.credential;
 				const redacted: SnapshotCredential =
-					credential.type === "api_key" ? credential : { ...credential, refresh: REMOTE_REFRESH_SENTINEL };
+					credential.type === "api_key" ? credential : redactRemoteOAuthCredential(credential);
 				entries.push({
 					id: entry.id,
 					provider,
@@ -6562,7 +6582,7 @@ export class AuthStorage {
 			return {
 				id,
 				provider,
-				credential: { ...updated, refresh: REMOTE_REFRESH_SENTINEL },
+				credential: redactRemoteOAuthCredential(updated),
 				identityKey: resolveCredentialIdentityKey(provider, updated),
 			};
 		}
@@ -6607,7 +6627,7 @@ export class AuthStorage {
 		return stored.map(entry => {
 			const persisted = entry.credential;
 			const redacted: SnapshotCredential =
-				persisted.type === "api_key" ? persisted : { ...persisted, refresh: REMOTE_REFRESH_SENTINEL };
+				persisted.type === "api_key" ? persisted : redactRemoteOAuthCredential(persisted);
 			return {
 				id: entry.id,
 				provider: entry.provider,

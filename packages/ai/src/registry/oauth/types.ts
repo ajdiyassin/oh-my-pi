@@ -70,6 +70,18 @@ export type OAuthPrompt = {
 	allowEmpty?: boolean;
 };
 
+export interface OAuthSelectOption {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+export interface OAuthSelectPrompt {
+	message: string;
+	options: readonly OAuthSelectOption[];
+	defaultValue?: string;
+}
+
 export type OAuthAuthInfo = {
 	/**
 	 * Full authorization URL. Suitable for direct browser launch, OSC 8
@@ -77,6 +89,10 @@ export type OAuthAuthInfo = {
 	 * string reaches the user unmodified.
 	 */
 	url: string;
+	/** One-time code shown alongside a device authorization URL. */
+	userCode?: string;
+	/** Epoch milliseconds after which a device authorization code expires. */
+	expiresAt?: number;
 	/**
 	 * Short loopback URL that 302-redirects to {@link url}. Provided by flows
 	 * that host the redirect on the same callback server they already run
@@ -106,6 +122,7 @@ export interface OAuthController {
 	onProgress?(message: string): void;
 	onManualCodeInput?(): Promise<string>;
 	onPrompt?(prompt: OAuthPrompt): Promise<string>;
+	onSelect?(prompt: OAuthSelectPrompt): Promise<string>;
 	signal?: AbortSignal;
 	fetch?: FetchImpl;
 	cache?: OAuthLoginCache;

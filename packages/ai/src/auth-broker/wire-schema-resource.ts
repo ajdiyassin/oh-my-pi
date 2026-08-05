@@ -37,6 +37,11 @@ import type {
 	CredentialUploadResponse,
 	DisabledCredentialsResponse,
 	HealthzResponse,
+	KiroLoginCancelResponse,
+	KiroLoginDefaultsResponse,
+	KiroLoginStartRequest,
+	KiroLoginStartResponse,
+	KiroLoginStatusResponse,
 	RefresherSchedule,
 	SnapshotEntry,
 	SnapshotResponse,
@@ -81,6 +86,11 @@ export interface AuthBrokerWireSchemas {
 	readonly usageStaleResponseSchema: Type<UsageStaleResponse>;
 	readonly credentialUploadRequestSchema: Type<CredentialUploadRequest>;
 	readonly credentialUploadResponseSchema: Type<CredentialUploadResponse>;
+	readonly kiroLoginDefaultsResponseSchema: Type<KiroLoginDefaultsResponse>;
+	readonly kiroLoginStartRequestSchema: Type<KiroLoginStartRequest>;
+	readonly kiroLoginStartResponseSchema: Type<KiroLoginStartResponse>;
+	readonly kiroLoginStatusResponseSchema: Type<KiroLoginStatusResponse>;
+	readonly kiroLoginCancelResponseSchema: Type<KiroLoginCancelResponse>;
 }
 
 function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
@@ -118,7 +128,7 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"authorizedAt?": "number",
 	});
 
-	/** OAuth credential as it appears in broker snapshots — refresh replaced with sentinel. */
+	/** OAuth credential as it appears in broker snapshots — refresh and Kiro client secret replaced/omitted. */
 	const remoteOauthCredentialSchema = type({
 		"apiEndpoint?": "string",
 		type: "'oauth'",
@@ -132,7 +142,6 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"orgId?": "string",
 		"orgName?": "string",
 		"kiroClientId?": "string",
-		"kiroClientSecret?": "string",
 		"kiroClientSecretExpiresAt?": "number",
 		"kiroTokenEndpoint?": "string",
 		"kiroAuthMethod?": "'device'",
@@ -144,7 +153,10 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		"kiroProfileArn?": "string",
 		"kiroRuntimeRegion?": "string",
 		"authorizedAt?": "number",
-	});
+	}).narrow(
+		(value, ctx) =>
+			!("kiroClientSecret" in value) || ctx.mustBe("a remote OAuth credential without kiroClientSecret"),
+	);
 
 	const apiKeyCredentialSchema = type({
 		"+": "reject",
@@ -469,6 +481,61 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		entries: credentialSnapshotEntrySchema.array(),
 	});
 
+	// ─── Kiro broker-owned login ──────────────────────────────────────────────
+
+	const kiroLoginDefaultsResponseSchema = type({
+		"+": "reject",
+		"startUrl?": "string",
+		"region?": "string",
+	});
+
+	const kiroLoginStartRequestSchema = type({
+		"+": "reject",
+		startUrl: "string",
+		region: "string",
+	});
+
+	const kiroLoginStartResponseSchema = type({
+		"+": "reject",
+		sessionId: type("string").atLeastLength(1),
+		url: "string",
+		userCode: "string",
+		expiresAt: "number",
+	});
+
+	const kiroLoginIdentitySchema = type({
+		"+": "reject",
+		type: "'oauth' | 'api_key'",
+		"email?": "string",
+		"accountId?": "string",
+		"orgId?": "string",
+		"orgName?": "string",
+	});
+
+	const kiroLoginStatusResponseSchema = type({
+		"+": "reject",
+		status: "'pending'",
+	})
+		.or(
+			type({
+				"+": "reject",
+				status: "'complete'",
+				identity: kiroLoginIdentitySchema,
+			}),
+		)
+		.or(
+			type({
+				"+": "reject",
+				status: "'error'",
+				message: "string",
+			}),
+		);
+
+	const kiroLoginCancelResponseSchema = type({
+		"+": "reject",
+		ok: "boolean",
+	});
+
 	return {
 		oauthCredentialSchema,
 		remoteOauthCredentialSchema,
@@ -501,6 +568,11 @@ function buildAuthBrokerWireSchemas(): AuthBrokerWireSchemas {
 		usageStaleResponseSchema,
 		credentialUploadRequestSchema,
 		credentialUploadResponseSchema,
+		kiroLoginDefaultsResponseSchema,
+		kiroLoginStartRequestSchema,
+		kiroLoginStartResponseSchema,
+		kiroLoginStatusResponseSchema,
+		kiroLoginCancelResponseSchema,
 	};
 }
 

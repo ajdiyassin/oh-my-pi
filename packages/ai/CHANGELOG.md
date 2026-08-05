@@ -17,10 +17,12 @@
 - Added capture-backed OAuth Kiro quota reporting with profile-scoped usage limits and privacy-safe metadata.
 - Added the native Kiro provider with AWS EventStream request/response transport, image and tool-call conversion, adaptive reasoning, retry/error classification, and public stream dispatch.
 - Reserved the native `kiro` API and OAuth identifiers so legacy extensions cannot shadow the built-in provider.
+- Added broker-hosted Kiro IAM Identity Center login, including device-code session status, cached login defaults, and broker-only storage for refresh and registered-client secrets.
 
 ### Fixed
 
 - Hardened native Kiro stream handling for semantic output timeouts, context-overflow classification, supported user images, interleaved tool calls, malformed lifecycle events, and retry/replay boundaries.
+- Redacted Kiro refresh and registered-client secrets from remote credential snapshots while preserving profile-scoped OAuth refresh behavior and privacy-safe usage identities.
 
 ## [17.2.7] - 2026-08-03
 

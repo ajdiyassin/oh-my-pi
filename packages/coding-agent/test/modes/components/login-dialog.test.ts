@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import type { OAuthSelectPrompt } from "@oh-my-pi/pi-ai/registry/oauth/types";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { LoginDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/login-dialog";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -42,5 +43,28 @@ describe("LoginDialogComponent", () => {
 		} finally {
 			openSpy.mockRestore();
 		}
+	});
+
+	it("isolates native selection input and replaces the previous interactive phase", async () => {
+		const tui = { requestRender() {} } as unknown as TUI;
+		const dialog = new LoginDialogComponent(tui, "kiro", () => {});
+		const firstPrompt = dialog.showPrompt("First prompt");
+		const selection: OAuthSelectPrompt = {
+			message: "Choose a method",
+			options: [
+				{ value: "aws", label: "AWS" },
+				{ value: "builder", label: "Builder" },
+			],
+			defaultValue: "aws",
+		};
+		const selectPrompt = dialog.showSelect(selection);
+
+		await expect(firstPrompt).rejects.toBeInstanceOf(Error);
+		dialog.pasteText("ignored while selecting");
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\r");
+
+		expect(await selectPrompt).toBe("builder");
+		expect(dialog.render(80).join("\n")).toContain("Choose a method");
 	});
 });

@@ -9,6 +9,7 @@
  */
 import * as os from "node:os";
 import { scheduler } from "node:timers/promises";
+import { extractKiroProfileSegment } from "@oh-my-pi/pi-catalog/wire/kiro";
 import { getInstallId, logger } from "@oh-my-pi/pi-utils";
 import {
 	type AuthCredential,
@@ -16,17 +17,24 @@ import {
 	type AuthCredentialStore,
 	type DisabledCredentialSummary,
 	type OAuthCredential,
+	type OAuthLoginController,
+	type OAuthLoginIdentity,
 	REMOTE_REFRESH_SENTINEL,
 	type StoredAuthCredential,
 	type StoredCredentialBlock,
 } from "../auth-storage";
 import * as AIError from "../error";
+import { selectKiroLoginMethod } from "../registry/kiro";
+import { throwIfKiroLoginCancelled } from "../registry/kiro-cancellation";
+import { pollOAuthDeviceCodeFlow } from "../registry/oauth/device-code";
+import { validateKiroApiKey } from "../registry/oauth/kiro";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
 import type { ObservedUsageEntry, UsageReport } from "../usage";
 import { type AuthBrokerClient, AuthBrokerError, AuthBrokerStreamUnsupportedError } from "./client";
 import type {
 	CredentialBlockSnapshot,
+	KiroLoginCancelResponse,
 	RefresherSchedule,
 	SnapshotEntry,
 	SnapshotResponse,
@@ -160,6 +168,13 @@ interface UsageCacheEntry {
 	fetchedAt: number;
 }
 
+function normalizeUsageOrgId(provider: Provider, orgId: string | undefined): string | undefined {
+	const trimmed = orgId?.trim();
+	if (!trimmed) return undefined;
+	const normalized = provider === "kiro" ? (extractKiroProfileSegment(trimmed) ?? trimmed) : trimmed;
+	return normalized.toLowerCase();
+}
+
 function usageOverlayKey(
 	provider: Provider,
 	ids: { accountId?: string; email?: string; projectId?: string; orgId?: string },
@@ -177,7 +192,7 @@ function usageOverlayKey(
 	if (accountId) base = `account:${accountId}`;
 	else if (email) base = `email:${email}`;
 	else if (projectId) base = `project:${projectId}`;
-	const orgId = ids.orgId?.trim().toLowerCase();
+	const orgId = normalizeUsageOrgId(provider, ids.orgId);
 	if (orgId) return base ? `${provider}\0org:${orgId}|${base}` : `${provider}\0org:${orgId}`;
 	if (base) return `${provider}\0${base}`;
 	return undefined;
@@ -288,6 +303,110 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 
 	get client(): AuthBrokerClient {
 		return this.#client;
+	}
+
+	async loginRemote(provider: string, ctrl: OAuthLoginController): Promise<OAuthLoginIdentity | undefined> {
+		if (provider !== "kiro") {
+			throw new AIError.ConfigurationError(`Remote login is not supported for provider: ${provider}`);
+		}
+		try {
+			const method = await selectKiroLoginMethod(ctrl);
+			throwIfKiroLoginCancelled(ctrl.signal);
+			if (method === "builder") {
+				ctrl.onProgress?.("Builder ID login is not available yet.");
+				return undefined;
+			}
+			if (method === "api") {
+				const apiKey = await ctrl.onPrompt({ message: "Paste your Kiro API key", placeholder: "ksk_..." });
+				throwIfKiroLoginCancelled(ctrl.signal);
+				const validated = await validateKiroApiKey(apiKey, {
+					fetch: ctrl.fetch,
+					signal: ctrl.signal,
+					apiRegion: Bun.env.KIRO_API_REGION,
+				});
+				throwIfKiroLoginCancelled(ctrl.signal);
+				await this.replaceAuthCredentialsRemote("kiro", [
+					{
+						type: "api_key",
+						key: validated.key,
+						source: "login",
+						apiEndpoint: validated.apiEndpoint,
+					},
+				]);
+				ctrl.onProgress?.("Logged in");
+				return { type: "api_key" };
+			}
+
+			const defaults = await this.#client.fetchKiroLoginDefaults(ctrl.signal);
+			const startUrlInput = await ctrl.onPrompt({
+				message: "Enter Start URL",
+				...(defaults.startUrl ? { defaultValue: defaults.startUrl } : {}),
+			});
+			const regionInput = await ctrl.onPrompt({
+				message: "Enter Region",
+				...(defaults.region ? { defaultValue: defaults.region } : {}),
+			});
+			const startUrl = startUrlInput.trim() || defaults.startUrl;
+			const region = regionInput.trim() || defaults.region;
+			if (!startUrl || !region) {
+				throw new AIError.OAuthError("Kiro AWS login requires a Start URL and Region", {
+					kind: "validation",
+					provider: "kiro",
+				});
+			}
+			const started = await this.#client.startKiroLogin({ startUrl, region }, ctrl.signal);
+			throwIfKiroLoginCancelled(ctrl.signal);
+			ctrl.onAuth({
+				url: started.url,
+				userCode: started.userCode,
+				expiresAt: started.expiresAt,
+				instructions: "Confirm this code in the browser",
+			});
+			ctrl.onProgress?.("Logging in...");
+
+			let cancelRequest: Promise<KiroLoginCancelResponse> | undefined;
+			const requestCancellation = (): void => {
+				cancelRequest ??= this.#client.cancelKiroLogin(started.sessionId).catch(error => {
+					logger.debug("auth-broker Kiro login cancellation failed", { error: String(error) });
+					return { ok: false };
+				});
+			};
+			const abortHandler = (): void => requestCancellation();
+			ctrl.signal?.addEventListener("abort", abortHandler, { once: true });
+			if (ctrl.signal?.aborted) requestCancellation();
+			let completed = false;
+			try {
+				const identity = await pollOAuthDeviceCodeFlow<OAuthLoginIdentity>({
+					poll: async () => {
+						try {
+							const status = await this.#client.getKiroLoginStatus(started.sessionId, ctrl.signal);
+							if (status.status === "pending") return { status: "pending" as const };
+							if (status.status === "error") return { status: "failed" as const, message: status.message };
+							return { status: "complete" as const, value: status.identity };
+						} catch (error) {
+							throwIfKiroLoginCancelled(ctrl.signal);
+							throw error;
+						}
+					},
+					intervalSeconds: 1,
+					expiresInSeconds: Math.max(1, (started.expiresAt - Date.now()) / 1000),
+					waitBeforeFirstPoll: true,
+					signal: ctrl.signal,
+					sleep: ctrl.sleep,
+				});
+				completed = true;
+				await this.refreshSnapshot();
+				return identity;
+			} finally {
+				ctrl.signal?.removeEventListener("abort", abortHandler);
+				if (!completed) {
+					requestCancellation();
+					await cancelRequest;
+				}
+			}
+		} finally {
+			this.deleteCachePrefix("oauth:kiro:");
+		}
 	}
 
 	get snapshot(): SnapshotResponse {
@@ -1187,7 +1306,7 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 	// hand one subscription the OTHER subscription's pool (e.g. mark healthy
 	// Max exhausted via Team's report, or rank a legacy row on a sibling's
 	// numbers).
-	const orgId = credential.orgId?.trim().toLowerCase();
+	const orgId = normalizeUsageOrgId(provider, credential.orgId);
 	const accountId = credential.accountId?.trim().toLowerCase();
 	const email = credential.email?.trim().toLowerCase();
 	const projectId = credential.projectId?.trim().toLowerCase();
@@ -1195,10 +1314,13 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 		const sameOrg: UsageReport[] = [];
 		let sawReportOrg = false;
 		for (const report of all) {
-			const metaOrg = readMetadataString((report.metadata ?? {}) as Record<string, unknown>, "orgId");
+			const metaOrg = normalizeUsageOrgId(
+				provider,
+				readMetadataString((report.metadata ?? {}) as Record<string, unknown>, "orgId"),
+			);
 			if (metaOrg) {
 				sawReportOrg = true;
-				if (metaOrg.toLowerCase() === orgId) sameOrg.push(report);
+				if (metaOrg === orgId) sameOrg.push(report);
 			}
 		}
 		// Org-attributed reports exist: the shared org is a GATE, not a match.
@@ -1236,8 +1358,8 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 
 function usageReportMatchesCredential(report: UsageReport, credential: OAuthCredential): boolean {
 	const metadata = (report.metadata ?? {}) as Record<string, unknown>;
-	const credentialOrg = credential.orgId?.trim().toLowerCase();
-	const reportOrg = readMetadataString(metadata, "orgId")?.toLowerCase();
+	const credentialOrg = normalizeUsageOrgId(report.provider, credential.orgId);
+	const reportOrg = normalizeUsageOrgId(report.provider, readMetadataString(metadata, "orgId"));
 	if (credentialOrg !== reportOrg) return false;
 
 	const accountId = credential.accountId?.trim().toLowerCase();
@@ -1260,7 +1382,7 @@ function findMatchingReportIndex(reports: UsageReport[], overlay: UsageReport): 
 	// only merge into an org-less report. Within the same org the overlay's
 	// base identity must still match — two Team members' reports share the
 	// org id but must not swallow each other's header ingests.
-	const overlayOrg = readMetadataString(metadata, "orgId")?.toLowerCase();
+	const overlayOrg = normalizeUsageOrgId(overlay.provider, readMetadataString(metadata, "orgId"));
 	const accountId = readMetadataString(metadata, "accountId")?.toLowerCase();
 	const email = readMetadataString(metadata, "email")?.toLowerCase();
 	const projectId = readMetadataString(metadata, "projectId")?.toLowerCase();
@@ -1268,10 +1390,13 @@ function findMatchingReportIndex(reports: UsageReport[], overlay: UsageReport): 
 		const sameOrg: { report: UsageReport; index: number }[] = [];
 		let sawReportOrg = false;
 		for (const candidate of all) {
-			const candidateOrg = readMetadataString((candidate.report.metadata ?? {}) as Record<string, unknown>, "orgId");
+			const candidateOrg = normalizeUsageOrgId(
+				candidate.report.provider,
+				readMetadataString((candidate.report.metadata ?? {}) as Record<string, unknown>, "orgId"),
+			);
 			if (candidateOrg) {
 				sawReportOrg = true;
-				if (candidateOrg.toLowerCase() === overlayOrg) sameOrg.push(candidate);
+				if (candidateOrg === overlayOrg) sameOrg.push(candidate);
 			}
 		}
 		if (sawReportOrg) {

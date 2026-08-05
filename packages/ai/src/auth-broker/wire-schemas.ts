@@ -40,4 +40,9 @@ export const {
 	usageStaleResponseSchema,
 	credentialUploadRequestSchema,
 	credentialUploadResponseSchema,
+	kiroLoginDefaultsResponseSchema,
+	kiroLoginStartRequestSchema,
+	kiroLoginStartResponseSchema,
+	kiroLoginStatusResponseSchema,
+	kiroLoginCancelResponseSchema,
 } = wireSchemas;

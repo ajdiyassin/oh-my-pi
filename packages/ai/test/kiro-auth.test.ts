@@ -9,7 +9,7 @@ import {
 	selectKiroProfile,
 	validateKiroApiKey,
 } from "@oh-my-pi/pi-ai/registry/oauth/kiro";
-import type { OAuthLoginCache, OAuthPrompt } from "@oh-my-pi/pi-ai/registry/oauth/types";
+import type { OAuthLoginCache, OAuthPrompt, OAuthSelectPrompt } from "@oh-my-pi/pi-ai/registry/oauth/types";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 
 const PROFILE_ONE = "arn:aws:codewhisperer:us-east-1:123456789012:profile/one";
@@ -120,15 +120,18 @@ describe("Kiro authentication", () => {
 		expect(called).toBe(false);
 	});
 
-	it("shows only AWS, deferred Builder, and API choices", async () => {
-		const prompts: OAuthPrompt[] = [];
+	it("uses typed method choices and does not start deferred Builder login", async () => {
+		const selections: OAuthSelectPrompt[] = [];
 		const progress: string[] = [];
 		const result = await kiroProvider.login({
 			onAuth: () => {},
 			onProgress: message => progress.push(message),
-			onPrompt: async prompt => {
-				prompts.push(prompt);
-				return "Builder";
+			onPrompt: async () => {
+				throw new Error("Builder selection must not use a text prompt");
+			},
+			onSelect: async prompt => {
+				selections.push(prompt);
+				return "builder";
 			},
 			fetch: async () => {
 				throw new Error("Builder must not make a request");
@@ -136,21 +139,34 @@ describe("Kiro authentication", () => {
 		});
 
 		expect(result).toBe("");
-		expect(prompts).toHaveLength(1);
-		expect(prompts[0]?.message).toBe("Select login method\n❯ AWS\n  Builder\n  API");
-		expect(prompts[0]?.defaultValue).toBe("AWS");
+		expect(selections).toEqual([
+			{
+				message: "Select Kiro login method",
+				options: [
+					{ value: "aws", label: "AWS" },
+					{ value: "builder", label: "Builder" },
+					{ value: "api", label: "API" },
+				],
+				defaultValue: "aws",
+			},
+		]);
 		expect(progress).toEqual(["Builder ID login is not available yet."]);
 	});
 
 	it("routes API selection to the existing API-key validation path", async () => {
+		const selections: OAuthSelectPrompt[] = [];
 		const prompts: string[] = [];
 		let called = false;
 		await expect(
 			kiroProvider.login({
 				onAuth: () => {},
+				onSelect: async prompt => {
+					selections.push(prompt);
+					return "api";
+				},
 				onPrompt: async prompt => {
 					prompts.push(prompt.message);
-					return prompts.length === 1 ? "API" : "not-a-key";
+					return "not-a-key";
 				},
 				fetch: async () => {
 					called = true;
@@ -158,14 +174,15 @@ describe("Kiro authentication", () => {
 				},
 			}),
 		).rejects.toMatchObject({ kind: "validation" });
-		expect(prompts).toEqual(["Select login method\n❯ AWS\n  Builder\n  API", "Paste your Kiro API key"]);
+		expect(selections[0]?.options.map(option => option.value)).toEqual(["aws", "builder", "api"]);
+		expect(prompts).toEqual(["Paste your Kiro API key"]);
 		expect(called).toBe(false);
 	});
 
 	it("prompts for IAM Identity Center values, uses exact registration scopes, and reuses saved state", async () => {
 		const { cache, values } = memoryCache();
 		const prompts: OAuthPrompt[] = [];
-		const authEvents: Array<{ url: string; instructions?: string }> = [];
+		const authEvents: Array<{ url: string; userCode?: string; expiresAt?: number; instructions?: string }> = [];
 		const progress: string[] = [];
 		const firstRequests: Array<{ url: string; init?: RequestInit }> = [];
 		const firstResponses: Response[] = [
@@ -209,13 +226,13 @@ describe("Kiro authentication", () => {
 			clientSecret: "client-secret",
 			startUrl: "https://example.awsapps.com/start",
 		});
-		expect(authEvents).toEqual([
-			{
-				url: "https://device.sso.aws.dev/complete",
-				instructions:
-					"Confirm the following code in the browser\nCode: ABCD-EFGH\nOpen this URL: https://device.sso.aws.dev/complete",
-			},
-		]);
+		expect(authEvents).toHaveLength(1);
+		expect(authEvents[0]).toMatchObject({
+			url: "https://device.sso.aws.dev/complete",
+			userCode: "ABCD-EFGH",
+			instructions: "Confirm this code in the browser",
+		});
+		expect(authEvents[0]?.expiresAt).toBeGreaterThan(Date.now());
 		expect(progress).toEqual(["Logging in..."]);
 		expect(first).toMatchObject({
 			kiroAuthMethod: "device",
@@ -265,8 +282,39 @@ describe("Kiro authentication", () => {
 		expect(secondRequests).not.toContain("https://oidc.eu-west-1.amazonaws.com/client/register");
 	});
 
+	it("continues polling after RFC 8628 pending and slow_down responses", async () => {
+		const { cache } = memoryCache();
+		const responses: Response[] = [
+			json(registeredClient()),
+			json(deviceAuthorization()),
+			json({ error: "authorization_pending" }, 400),
+			json({ error: "slow_down" }, 400),
+			json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 }),
+			...profileResponses(),
+		];
+		const requests: string[] = [];
+		const result = await loginKiroDevice(
+			{
+				onAuth: () => {},
+				onPrompt: async () => {
+					throw new Error("unexpected prompt");
+				},
+				fetch: async input => {
+					requests.push(String(input));
+					return responses.shift() ?? json({ error: "unexpected request" }, 500);
+				},
+				cache,
+				sleep: async () => {},
+			},
+			{ region: "us-east-1", startUrl: "https://example.awsapps.com/start" },
+		);
+
+		expect(requests.filter(url => url.endsWith("/token"))).toHaveLength(3);
+		expect(result.orgId).toBe(PROFILE_TWO);
+	});
+
 	it("prompts for a selected profile without exposing its ARN or account id", async () => {
-		let prompt = "";
+		let prompt: OAuthSelectPrompt | undefined;
 		const selected = await selectKiroProfile("access-token", "us-east-1", {
 			fetch: async () =>
 				json({
@@ -275,17 +323,20 @@ describe("Kiro authentication", () => {
 						{ arn: PROFILE_TWO, profileName: "Work" },
 					],
 				}),
-			onPrompt: async options => {
-				prompt = options.message;
+			onSelect: async options => {
+				prompt = options;
 				return "2";
 			},
 		});
 
 		expect(selected).toEqual({ profileArn: PROFILE_TWO, profileName: "Work" });
-		expect(prompt).toContain("Personal");
-		expect(prompt).toContain("Work");
-		expect(prompt).not.toContain("arn:");
-		expect(prompt).not.toContain("123456789012");
+		expect(prompt?.options).toEqual([
+			{ value: "1", label: "Personal" },
+			{ value: "2", label: "Work" },
+		]);
+		expect(prompt?.message).toBe("Select a Kiro profile");
+		expect(JSON.stringify(prompt)).not.toContain("arn:");
+		expect(JSON.stringify(prompt)).not.toContain("123456789012");
 	});
 
 	it("refreshes with the registered client, rotates refresh tokens, and keeps profile provenance", async () => {
@@ -330,6 +381,41 @@ describe("Kiro authentication", () => {
 			kiroRuntimeRegion: "us-east-1",
 			orgId: PROFILE_TWO,
 		});
+	});
+
+	it("retries transient refresh failures but does not retry semantic client errors", async () => {
+		const current = {
+			access: "old-access",
+			refresh: "refresh-token",
+			expires: 0,
+			kiroClientId: "client-id",
+			kiroClientSecret: "client-secret",
+			kiroClientSecretExpiresAt: Date.now() + 60_000,
+			kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+			kiroAuthMethod: "device" as const,
+		};
+		let transientAttempts = 0;
+		const retried = await refreshKiroToken(current, {
+			fetch: async () => {
+				transientAttempts += 1;
+				if (transientAttempts < 3)
+					return json({ error: "temporarily unavailable" }, transientAttempts === 1 ? 503 : 429);
+				return json({ accessToken: "new-access", refreshToken: "new-refresh", expiresIn: 3600 });
+			},
+		});
+		expect(transientAttempts).toBe(3);
+		expect(retried).toMatchObject({ access: "new-access", refresh: "new-refresh" });
+
+		let semanticAttempts = 0;
+		await expect(
+			refreshKiroToken(current, {
+				fetch: async () => {
+					semanticAttempts += 1;
+					return json({ error: "invalid client" }, 400);
+				},
+			}),
+		).rejects.toMatchObject({ kind: "token-refresh", status: 400 });
+		expect(semanticAttempts).toBe(1);
 	});
 
 	it("retains the old refresh token when rotation is omitted and rejects expired clients/cancellation", async () => {

@@ -23,6 +23,11 @@ import type {
 	CredentialUploadResponse,
 	DisabledCredentialsResponse,
 	HealthzResponse,
+	KiroLoginCancelResponse,
+	KiroLoginDefaultsResponse,
+	KiroLoginStartRequest,
+	KiroLoginStartResponse,
+	KiroLoginStatusResponse,
 	SnapshotResponse,
 	SnapshotStreamEvent,
 	UsageHistoryResponse,
@@ -42,6 +47,10 @@ type AuthBrokerResponseSchemaName =
 	| "credentialUploadResponseSchema"
 	| "disabledCredentialsResponseSchema"
 	| "healthzResponseSchema"
+	| "kiroLoginCancelResponseSchema"
+	| "kiroLoginDefaultsResponseSchema"
+	| "kiroLoginStartResponseSchema"
+	| "kiroLoginStatusResponseSchema"
 	| "usageHistoryResponseSchema"
 	| "usageResponseSchema"
 	| "usageStaleResponseSchema";
@@ -127,6 +136,34 @@ export class AuthBrokerClient {
 			schema: "healthzResponseSchema",
 			auth: false,
 			signal,
+		});
+	}
+
+	fetchKiroLoginDefaults(signal?: AbortSignal): Promise<KiroLoginDefaultsResponse> {
+		return this.#request<KiroLoginDefaultsResponse>("GET", "/v1/login/kiro/defaults", {
+			schema: "kiroLoginDefaultsResponseSchema",
+			signal,
+		});
+	}
+
+	startKiroLogin(request: KiroLoginStartRequest, signal?: AbortSignal): Promise<KiroLoginStartResponse> {
+		return this.#request<KiroLoginStartResponse>("POST", "/v1/login/kiro", {
+			body: request,
+			schema: "kiroLoginStartResponseSchema",
+			signal,
+		});
+	}
+
+	getKiroLoginStatus(sessionId: string, signal?: AbortSignal): Promise<KiroLoginStatusResponse> {
+		return this.#request<KiroLoginStatusResponse>("GET", `/v1/login/kiro/${encodeURIComponent(sessionId)}`, {
+			schema: "kiroLoginStatusResponseSchema",
+			signal,
+		});
+	}
+
+	cancelKiroLogin(sessionId: string): Promise<KiroLoginCancelResponse> {
+		return this.#request<KiroLoginCancelResponse>("DELETE", `/v1/login/kiro/${encodeURIComponent(sessionId)}`, {
+			schema: "kiroLoginCancelResponseSchema",
 		});
 	}
 

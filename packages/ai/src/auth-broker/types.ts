@@ -11,6 +11,7 @@ import type {
 	AuthCredentialSnapshot,
 	AuthCredentialSnapshotEntry,
 	DisabledCredentialSummary,
+	OAuthLoginIdentity,
 	StoredCredentialBlock,
 } from "../auth-storage";
 import type { ClientUsageClientSummary, ClientUsageReport, UsageHistoryEntry, UsageReport } from "../usage";
@@ -123,6 +124,37 @@ export interface CredentialUploadRequest {
 /** POST /v1/credential response body — redacted snapshot of the provider's rows after upsert. */
 export interface CredentialUploadResponse {
 	entries: AuthCredentialSnapshotEntry[];
+}
+
+/** GET /v1/login/kiro/defaults response body. */
+export interface KiroLoginDefaultsResponse {
+	startUrl?: string;
+	region?: string;
+}
+
+/** POST /v1/login/kiro request body. */
+export interface KiroLoginStartRequest {
+	startUrl: string;
+	region: string;
+}
+
+/** POST /v1/login/kiro response body. */
+export interface KiroLoginStartResponse {
+	sessionId: string;
+	url: string;
+	userCode: string;
+	expiresAt: number;
+}
+
+/** GET /v1/login/kiro/:sessionId response body. */
+export type KiroLoginStatusResponse =
+	| { status: "pending" }
+	| { status: "complete"; identity: OAuthLoginIdentity }
+	| { status: "error"; message: string };
+
+/** DELETE /v1/login/kiro/:sessionId response body. */
+export interface KiroLoginCancelResponse {
+	ok: boolean;
 }
 
 /**

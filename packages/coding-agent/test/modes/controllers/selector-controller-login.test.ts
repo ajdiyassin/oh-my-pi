@@ -30,9 +30,15 @@ describe("SelectorController login", () => {
 		const authStorage = {
 			login: vi.fn(async () => {
 				loginSaved.resolve();
+				return {
+					type: "oauth" as const,
+					email: "alice\n@example.com",
+					orgName: "Team\tPlan",
+				};
 			}),
 		} as unknown as AuthStorage;
-		const refresh = vi.fn(() => new Promise<void>(() => {}));
+		const refreshPending = Promise.withResolvers<void>();
+		const refresh = vi.fn(() => refreshPending.promise);
 		const refreshProvider = vi.fn(async () => {});
 		const ctx = {
 			oauthManualInput: {
@@ -66,7 +72,9 @@ describe("SelectorController login", () => {
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(renderPresented(presentedBlocks)).toContain("Successfully logged in to xai-oauth");
+		expect(renderPresented(presentedBlocks)).toContain(
+			"Successfully logged in to xai-oauth as alice @example.com (Team Plan)",
+		);
 		// Post-login refresh is scoped to the just-authenticated provider with the
 		// `online` strategy (#5780) — not the all-provider default refresh.
 		expect(refreshProvider).toHaveBeenCalledTimes(1);
@@ -75,13 +83,47 @@ describe("SelectorController login", () => {
 		expect(ctx.showError).not.toHaveBeenCalled();
 	});
 
+	it("shows only a safe Kiro profile label after login", async () => {
+		const loginSaved = Promise.withResolvers<void>();
+		const presentedBlocks: unknown[] = [];
+		const profileArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/work-profile";
+		const authStorage = {
+			login: vi.fn(async () => {
+				loginSaved.resolve();
+				return { type: "oauth" as const, accountId: "123456789012", orgId: profileArn };
+			}),
+		} as unknown as AuthStorage;
+		const refreshProvider = vi.fn(async () => {});
+		const ctx = {
+			oauthManualInput: { waitForInput: vi.fn(), clear: vi.fn() },
+			session: { modelRegistry: { authStorage, refreshProvider } },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn(), children: [] },
+			editor: {},
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			present: vi.fn((block: unknown) => presentedBlocks.push(block)),
+			openInBrowser: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new SelectorController(ctx);
+
+		void controller.showOAuthSelector("login", "kiro");
+		await loginSaved.promise;
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const rendered = renderPresented(presentedBlocks);
+		expect(rendered).toContain("Successfully logged in to kiro as work-profile");
+		expect(rendered).not.toContain(profileArn);
+		expect(rendered).not.toContain("123456789012");
+	});
+
 	it("Esc during a pending login aborts the flow and restores the editor", async () => {
-		const login = vi.fn(
-			(_provider: string, ctrl: { signal?: AbortSignal }) =>
-				new Promise<void>((_resolve, reject) => {
-					ctrl.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-				}),
-		);
+		const login = vi.fn((_provider: string, ctrl: { signal?: AbortSignal }) => {
+			const pending = Promise.withResolvers<undefined>();
+			ctrl.signal?.addEventListener("abort", () => pending.reject(new Error("aborted")), { once: true });
+			return pending.promise;
+		});
 		const authStorage = { login } as unknown as AuthStorage;
 		const editorSlot: unknown[] = [];
 		const editor = {};

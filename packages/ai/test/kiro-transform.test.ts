@@ -113,6 +113,15 @@ describe("Kiro request transformation", () => {
 		expect(historicalResult?.toolUseId).toBe(historicalAssistant?.toolUses?.[0]?.toolUseId);
 	});
 
+	test("uses the continuation prompt when the current user content is empty", () => {
+		const context: Context = {
+			messages: [{ role: "user", content: " \t\n", timestamp: 0 }],
+		};
+
+		const request = transformKiroRequest(createModel(), context);
+		expect(request.conversationState.currentMessage.userInputMessage.content).toBe("Please proceed with the task.");
+	});
+
 	test("clamps adaptive effort and output cap, and omits reasoning when disabled", () => {
 		const model = createModel({
 			reasoning: true,

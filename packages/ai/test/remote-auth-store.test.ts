@@ -116,6 +116,46 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
 		clientStorage.close();
 	});
+	test("AuthStorage reloads its credential map after remote login refreshes the broker snapshot", async () => {
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+
+		const profileArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/work-profile";
+		serverStore!.saveOAuth("kiro", {
+			access: "kiro-access",
+			refresh: "kiro-refresh",
+			expires: Date.now() + 120_000,
+			orgId: profileArn,
+			kiroProfileArn: profileArn,
+		});
+		await serverStorage!.reload();
+		vi.spyOn(remoteStore, "loginRemote").mockImplementation(async () => {
+			await remoteStore.refreshSnapshot();
+			return { type: "oauth", orgId: profileArn };
+		});
+
+		const identity = await clientStorage.login("kiro", {
+			onAuth: () => {},
+			onPrompt: async () => "",
+		});
+
+		expect(identity).toEqual({ type: "oauth", orgId: profileArn });
+		expect(clientStorage.getAll().kiro).toMatchObject({
+			type: "oauth",
+			access: "kiro-access",
+			orgId: profileArn,
+		});
+		clientStorage.close();
+		remoteStore.close();
+	});
+
 	test("suspect credential refresh updates the client snapshot from the broker response", async () => {
 		const rotated = {
 			access: "server-access-after-401",
@@ -466,6 +506,95 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		expect(validated.credentials[1]!.blocks).toEqual([
 			{ providerKey: "anthropic:oauth", blockScope: "tier:fable", blockedUntilMs: futureBlock },
 		]);
+	});
+
+	test("matches Kiro profile ARNs to safe usage segments and merges overlays", async () => {
+		const brokerClient = new AuthBrokerClient({ url: "http://127.0.0.1:9", token: "unused" });
+		const now = Date.now();
+		const profileArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/work-profile";
+		const profileSegment = "work-profile";
+		const credential = {
+			type: "oauth" as const,
+			access: "kiro-access",
+			refresh: REMOTE_REFRESH_SENTINEL,
+			expires: now + 120_000,
+			orgId: profileArn,
+			kiroProfileArn: profileArn,
+		};
+		const makeLimit = (id: string, used: number): UsageLimit => ({
+			id,
+			label: id,
+			scope: { provider: "kiro", windowId: "monthly", orgId: profileSegment },
+			window: { id: "monthly", label: "Monthly" },
+			amount: { used, limit: 100, usedFraction: used / 100, unit: "unknown" },
+			status: used >= 100 ? "exhausted" : "ok",
+		});
+		const matchingReport: UsageReport = {
+			provider: "kiro",
+			fetchedAt: now,
+			limits: [makeLimit("kiro:credits", 10), makeLimit("kiro:requests", 20)],
+			metadata: { orgId: profileSegment },
+		};
+		const unrelatedReport: UsageReport = {
+			provider: "kiro",
+			fetchedAt: now,
+			limits: [makeLimit("kiro:credits", 99)],
+			metadata: { orgId: "other-profile" },
+		};
+		const fetchSpy = vi
+			.spyOn(brokerClient, "fetchUsage")
+			.mockResolvedValue({ generatedAt: now, reports: [matchingReport, unrelatedReport] });
+		const identityKey = `org:${profileArn}`;
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			streamSnapshots: false,
+			accountPool: new Map([["kiro", new Set([identityKey])]]),
+			initialSnapshot: {
+				generation: 1,
+				generatedAt: now,
+				serverNowMs: now,
+				refresher: { enabled: false, intervalMs: 0, skewMs: 0, nextSweepInMs: Number.MAX_SAFE_INTEGER },
+				credentials: [
+					{
+						id: 1,
+						provider: "kiro",
+						credential,
+						identityKey,
+						rotatesInMs: null,
+					},
+				],
+			},
+		});
+		try {
+			const matched = await remoteStore.getUsageReport("kiro", credential);
+			expect(matched?.metadata?.orgId).toBe(profileSegment);
+			expect(requireLimit(matched!, "kiro:credits").amount.used).toBe(10);
+
+			const visible = await remoteStore.fetchUsageReports();
+			expect(visible).toEqual([matchingReport]);
+			expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+			const overlay: UsageReport = {
+				provider: "kiro",
+				fetchedAt: now + 1,
+				limits: [makeLimit("kiro:credits", 75)],
+				metadata: { orgId: profileSegment, headersUpdatedAt: now + 1 },
+			};
+			expect(remoteStore.ingestUsageReport("kiro", credential, overlay)).toBe(true);
+
+			const merged = await remoteStore.fetchUsageReports();
+			expect(merged).toHaveLength(1);
+			expect(merged?.[0]?.metadata?.orgId).toBe(profileSegment);
+			expect(merged?.[0]?.metadata?.headersUpdatedAt).toBe(now + 1);
+			expect(merged?.[0]?.limits).toHaveLength(2);
+			expect(requireLimit(merged![0]!, "kiro:credits").amount.used).toBe(75);
+			expect(requireLimit(merged![0]!, "kiro:requests").amount.used).toBe(20);
+
+			const perCredential = await remoteStore.getUsageReport("kiro", credential);
+			expect(requireLimit(perCredential!, "kiro:credits").amount.used).toBe(75);
+		} finally {
+			remoteStore.close();
+		}
 	});
 
 	test("getUsageReport routes each org-scoped credential to its own org's report", async () => {

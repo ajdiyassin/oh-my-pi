@@ -13,6 +13,7 @@ import {
 	validateKiroApiRegion,
 } from "@oh-my-pi/pi-catalog/wire/kiro";
 import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
+import { sanitizeText } from "@oh-my-pi/pi-utils/sanitize-text";
 import * as AIError from "../../error";
 import { throwIfKiroLoginCancelled } from "../kiro-cancellation";
 import { pollOAuthDeviceCodeFlow } from "./device-code";
@@ -27,6 +28,8 @@ const KIRO_PROMPT_CACHE_KEY = "oauth:kiro:iam-identity-center:prompt-defaults";
 const KIRO_REGISTRATION_CACHE_PREFIX = "oauth:kiro:iam-identity-center:registration:";
 const KIRO_CACHE_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
 const KIRO_REFRESH_MARGIN_MS = 60_000;
+export const KIRO_AUTH_MAX_ATTEMPTS = 3;
+export const KIRO_REGISTRATION_EXPIRY_MARGIN_MS = 60_000;
 const DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
 export const KIRO_IDENTITY_CENTER_SCOPES = [
@@ -44,6 +47,7 @@ export interface KiroRequestOptions {
 
 export interface KiroProfileSelectionOptions extends KiroRequestOptions {
 	onPrompt?: OAuthController["onPrompt"];
+	onSelect?: OAuthController["onSelect"];
 }
 
 export interface KiroDeviceConfig {
@@ -84,11 +88,28 @@ function registeredClientExpiry(value: unknown): number {
 	return value === 0 ? 0 : (value as number) * 1000;
 }
 
-async function request(
+class KiroTransportError extends Error {
+	readonly originalCause: unknown;
+
+	constructor(cause: unknown) {
+		super("Kiro request failed");
+		this.name = "KiroTransportError";
+		this.originalCause = cause;
+	}
+}
+
+function retryableHttpStatus(status: number): boolean {
+	return status === 429 || (status >= 500 && status <= 599);
+}
+
+function retryableRequestError(error: unknown): boolean {
+	return error instanceof KiroTransportError || (error instanceof AIError.OAuthError && error.kind === "timeout");
+}
+
+async function requestOnce(
 	url: string,
 	init: RequestInit,
 	options: KiroRequestOptions,
-	kind: "http" | "token-exchange" | "token-refresh" | "device-auth" | "polling" = "http",
 	bodyPolicy: "strict-json" | "allow-non-json-error" = "strict-json",
 ): Promise<{ response: Response; body: unknown }> {
 	throwIfKiroLoginCancelled(options.signal);
@@ -97,6 +118,10 @@ async function request(
 	try {
 		const response = await (options.fetch ?? fetch)(url, { ...init, signal });
 		throwIfKiroLoginCancelled(options.signal);
+		if (retryableHttpStatus(response.status)) {
+			await response.body?.cancel();
+			return { response, body: undefined };
+		}
 		if (!response.ok && bodyPolicy === "allow-non-json-error") {
 			await response.body?.cancel();
 			return { response, body: undefined };
@@ -118,8 +143,39 @@ async function request(
 			throw new AIError.OAuthError(message, { kind: "validation", provider: PROVIDER, cause });
 		}
 		if (cause instanceof AIError.OAuthError) throw cause;
-		throw new AIError.OAuthError("Kiro request failed", { kind, provider: PROVIDER, cause });
+		throw new KiroTransportError(cause);
 	}
+}
+
+async function request(
+	url: string,
+	init: RequestInit,
+	options: KiroRequestOptions,
+	kind: "http" | "token-exchange" | "token-refresh" | "device-auth" | "polling" = "http",
+	bodyPolicy: "strict-json" | "allow-non-json-error" = "strict-json",
+): Promise<{ response: Response; body: unknown }> {
+	for (let attempt = 0; attempt < KIRO_AUTH_MAX_ATTEMPTS; attempt += 1) {
+		throwIfKiroLoginCancelled(options.signal);
+		try {
+			const result = await requestOnce(url, init, options, bodyPolicy);
+			if (!retryableHttpStatus(result.response.status) || attempt === KIRO_AUTH_MAX_ATTEMPTS - 1) {
+				return result;
+			}
+		} catch (cause) {
+			throwIfKiroLoginCancelled(options.signal);
+			if (!retryableRequestError(cause) || attempt === KIRO_AUTH_MAX_ATTEMPTS - 1) {
+				if (cause instanceof KiroTransportError) {
+					throw new AIError.OAuthError("Kiro request failed", {
+						kind,
+						provider: PROVIDER,
+						cause: cause.originalCause,
+					});
+				}
+				throw cause;
+			}
+		}
+	}
+	throw new AIError.OAuthError("Kiro request failed", { kind, provider: PROVIDER });
 }
 
 function credentials(body: unknown, fallbackRefresh?: string): OAuthCredentials {
@@ -219,38 +275,53 @@ export async function validateKiroApiKey(
  * Label a profile for the selection prompt without echoing its ARN: the ARN
  * embeds the AWS account id, which must never reach the terminal or logs.
  */
-function profileLabel(profile: KiroProfileSummary, index: number): string {
-	if (profile.profileName) return `${index + 1}. ${profile.profileName}`;
+function profileLabel(profile: KiroProfileSummary): string {
+	const profileName = sanitizeText(profile.profileName ?? "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 128);
+	if (profileName) return profileName;
 	const region = parseKiroProfileArn(profile.arn)?.apiRegion;
-	return `${index + 1}. ${region ? `profile in ${region}` : "unnamed profile"}`;
+	return region ? `Profile in ${region}` : "Unnamed profile";
 }
 
-function chooseKiroProfile(
+async function chooseKiroProfile(
 	profiles: KiroProfileSummary[],
 	signal: AbortSignal | undefined,
-	onPrompt: OAuthController["onPrompt"],
+	options: KiroProfileSelectionOptions,
 ): Promise<{ profileArn: string; profileName: string | undefined }> {
 	if (profiles.length === 0) {
 		throw new AIError.OAuthError("No Kiro profiles are available", { kind: "discovery", provider: PROVIDER });
 	}
 	let selected = profiles[0]!;
 	if (profiles.length > 1) {
-		if (!onPrompt) throw new AIError.OnPromptRequiredError("Kiro profile selection");
-		const choices = profiles.map((profile, index) => profileLabel(profile, index)).join("\n");
-		return onPrompt({
-			message: `Select a Kiro profile:\n${choices}`,
-			placeholder: "1",
-		}).then(answer => {
-			throwIfKiroLoginCancelled(signal);
-			const index = Number.parseInt(answer.trim(), 10) - 1;
-			if (!Number.isInteger(index) || index < 0 || index >= profiles.length) {
-				throw new AIError.OAuthError("Invalid Kiro profile selection", { kind: "validation", provider: PROVIDER });
-			}
-			selected = profiles[index]!;
-			return { profileArn: selected.arn, profileName: selected.profileName };
-		});
+		const optionsForSelect = profiles.map((profile, index) => ({
+			value: String(index + 1),
+			label: profileLabel(profile),
+		}));
+		const answer = options.onSelect
+			? await options.onSelect({
+					message: "Select a Kiro profile",
+					options: optionsForSelect,
+					defaultValue: "1",
+				})
+			: options.onPrompt
+				? await options.onPrompt({
+						message: `Select a Kiro profile:\n${optionsForSelect
+							.map(option => `${option.value}. ${option.label}`)
+							.join("\\n")}`,
+						placeholder: "1",
+					})
+				: undefined;
+		if (answer === undefined) throw new AIError.OnPromptRequiredError("Kiro profile selection");
+		throwIfKiroLoginCancelled(signal);
+		const index = Number.parseInt(answer.trim(), 10) - 1;
+		if (!Number.isInteger(index) || index < 0 || index >= profiles.length) {
+			throw new AIError.OAuthError("Invalid Kiro profile selection", { kind: "validation", provider: PROVIDER });
+		}
+		selected = profiles[index]!;
 	}
-	return Promise.resolve({ profileArn: selected.arn, profileName: selected.profileName });
+	return { profileArn: selected.arn, profileName: selected.profileName };
 }
 
 export async function selectKiroProfile(
@@ -270,7 +341,7 @@ export async function selectKiroProfile(
 			cause,
 		});
 	}
-	return chooseKiroProfile(profiles, options.signal, options.onPrompt);
+	return chooseKiroProfile(profiles, options.signal, options);
 }
 
 async function selectKiroProfileFromBootstrapRegions(
@@ -302,7 +373,7 @@ async function selectKiroProfileFromBootstrapRegions(
 			cause: lastError,
 		});
 	}
-	return chooseKiroProfile(uniqueProfiles, options.signal, options.onPrompt);
+	return chooseKiroProfile(uniqueProfiles, options.signal, options);
 }
 
 function validateStartUrl(value: string): string {
@@ -410,7 +481,10 @@ function registrationCacheKey(region: string): string {
 }
 
 function registrationIsUsable(client: KiroRegisteredClient): boolean {
-	return client.clientSecretExpiresAt === 0 || client.clientSecretExpiresAt > Date.now();
+	return (
+		client.clientSecretExpiresAt === 0 ||
+		client.clientSecretExpiresAt > Date.now() + KIRO_REGISTRATION_EXPIRY_MARGIN_MS
+	);
 }
 
 function readCachedRegisteredClient(
@@ -508,12 +582,12 @@ async function getRegisteredClient(ctrl: OAuthLoginCallbacks, region: string): P
 	return readCachedRegisteredClient(ctrl.cache, region) ?? registerKiroClient(ctrl, region);
 }
 
-interface KiroPromptDefaults {
+export interface KiroPromptDefaults {
 	startUrl: string;
 	region: string;
 }
 
-function readPromptDefaults(cache: OAuthLoginCache | undefined): KiroPromptDefaults | undefined {
+export function readKiroPromptDefaults(cache: OAuthLoginCache | undefined): KiroPromptDefaults | undefined {
 	if (!cache) return undefined;
 	let raw: string | null;
 	try {
@@ -549,7 +623,7 @@ async function resolveDeviceInputs(
 	ctrl: OAuthLoginCallbacks,
 	config: KiroDeviceConfig,
 ): Promise<{ startUrl: string; region: string }> {
-	const cached = readPromptDefaults(ctrl.cache);
+	const cached = readKiroPromptDefaults(ctrl.cache);
 	const startUrlInput =
 		config.startUrl ??
 		(await ctrl.onPrompt({
@@ -636,7 +710,9 @@ export async function loginKiroDevice(
 	const authorization = await startDeviceAuthorization(ctrl, client, region, startUrl);
 	ctrl.onAuth({
 		url: authorization.verificationUriComplete,
-		instructions: `Confirm the following code in the browser\nCode: ${authorization.userCode}\nOpen this URL: ${authorization.verificationUriComplete}`,
+		userCode: authorization.userCode,
+		expiresAt: Date.now() + authorization.expiresIn * 1000,
+		instructions: "Confirm this code in the browser",
 	});
 	throwIfKiroLoginCancelled(ctrl.signal);
 	ctrl.onProgress?.("Logging in...");
@@ -668,7 +744,14 @@ export async function loginKiroDevice(
 			const pollBody = record(polled.body, "Invalid Kiro polling response");
 			if (pollBody.error === "authorization_pending") return { status: "pending" as const };
 			if (pollBody.error === "slow_down") return { status: "slow_down" as const };
-			if (!polled.response.ok || pollBody.error !== undefined) {
+			if (!polled.response.ok) {
+				throw new AIError.OAuthError("Kiro device authorization rejected", {
+					kind: "device-auth",
+					provider: PROVIDER,
+					status: polled.response.status,
+				});
+			}
+			if (pollBody.error !== undefined) {
 				throw new AIError.OAuthError("Kiro device authorization rejected", {
 					kind: "device-auth",
 					provider: PROVIDER,
@@ -688,6 +771,7 @@ export async function loginKiroDevice(
 		fetch: ctrl.fetch,
 		signal: ctrl.signal,
 		onPrompt: ctrl.onPrompt,
+		onSelect: ctrl.onSelect,
 	});
 	throwIfKiroLoginCancelled(ctrl.signal);
 	const parsedProfile = parseKiroProfileArn(selected.profileArn);

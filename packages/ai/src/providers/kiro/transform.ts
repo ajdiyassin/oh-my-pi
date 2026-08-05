@@ -261,6 +261,7 @@ export function transformKiroRequest(
 		currentImages = imageContent(first);
 	}
 	if (systemPending) currentContent = joinPromptContent(systemPending, currentContent);
+	if (currentContent.trim().length === 0) currentContent = CONTINUATION_PROMPT;
 
 	const toolSpecs = toolsToKiro(context.tools ?? []);
 	appendHistoricalToolPlaceholders(toolSpecs, history);

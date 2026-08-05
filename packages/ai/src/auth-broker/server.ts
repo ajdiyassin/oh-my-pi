@@ -13,6 +13,7 @@
 import { type Type, type } from "@oh-my-pi/omptype";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AuthStorage, StoredCredentialBlock } from "../auth-storage";
+import { readKiroPromptDefaults } from "../registry/oauth/kiro";
 import { parseBind } from "../utils/parse-bind";
 import { AuthBrokerRefresher, type AuthBrokerRefresherSchedule } from "./refresher";
 import type {
@@ -25,6 +26,11 @@ import type {
 	CredentialUploadResponse,
 	DisabledCredentialsResponse,
 	HealthzResponse,
+	KiroLoginCancelResponse,
+	KiroLoginDefaultsResponse,
+	KiroLoginStartRequest,
+	KiroLoginStartResponse,
+	KiroLoginStatusResponse,
 	RefresherSchedule,
 	SnapshotEntry,
 	SnapshotResponse,
@@ -639,6 +645,163 @@ function serveSnapshotStream(
 	});
 }
 
+const MAX_KIRO_LOGIN_SESSIONS = 8;
+const KIRO_LOGIN_MAX_LIFETIME_MS = 10 * 60_000;
+const KIRO_LOGIN_RESULT_RETENTION_MS = 5 * 60_000;
+const KIRO_LOGIN_ERROR_MESSAGE = "Kiro login failed; run login again.";
+const KIRO_LOGIN_CANCELLED_MESSAGE = "Kiro login cancelled.";
+const KIRO_LOGIN_STATUS_ROUTE = /^\/v1\/login\/kiro\/([A-Za-z0-9-]+)$/;
+
+interface KiroLoginStartWaiter {
+	promise: Promise<KiroLoginStartResponse>;
+	resolve(value: KiroLoginStartResponse): void;
+	reject(reason?: unknown): void;
+}
+
+interface KiroLoginSession {
+	id: string;
+	startUrl: string;
+	region: string;
+	controller: AbortController;
+	startReady: KiroLoginStartWaiter;
+	state: KiroLoginStatusResponse;
+	started?: KiroLoginStartResponse;
+	cleanupTimer?: NodeJS.Timeout;
+}
+
+function scheduleKiroLoginSessionCleanup(
+	sessions: Map<string, KiroLoginSession>,
+	session: KiroLoginSession,
+	delayMs: number,
+): void {
+	if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+	session.cleanupTimer = setTimeout(
+		() => {
+			if (session.state.status === "pending") {
+				session.controller.abort();
+				session.state = { status: "error", message: KIRO_LOGIN_ERROR_MESSAGE };
+				session.startReady.reject(new Error(KIRO_LOGIN_ERROR_MESSAGE));
+				scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_RESULT_RETENTION_MS);
+				return;
+			}
+			sessions.delete(session.id);
+		},
+		Math.max(1, delayMs),
+	);
+	session.cleanupTimer.unref?.();
+}
+
+function createKiroLoginSession(
+	sessions: Map<string, KiroLoginSession>,
+	startUrl: string,
+	region: string,
+): KiroLoginSession | undefined {
+	if (sessions.size >= MAX_KIRO_LOGIN_SESSIONS) return undefined;
+	const startReady = Promise.withResolvers<KiroLoginStartResponse>();
+	const session: KiroLoginSession = {
+		id: crypto.randomUUID(),
+		startUrl,
+		region,
+		controller: new AbortController(),
+		startReady,
+		state: { status: "pending" },
+	};
+	sessions.set(session.id, session);
+	scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_MAX_LIFETIME_MS);
+	return session;
+}
+
+function cancelKiroLoginSession(
+	sessions: Map<string, KiroLoginSession>,
+	session: KiroLoginSession,
+	message = KIRO_LOGIN_CANCELLED_MESSAGE,
+): void {
+	session.controller.abort();
+	if (session.state.status === "pending") {
+		session.state = { status: "error", message };
+		session.startReady.reject(new Error(message));
+	}
+	if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+	sessions.delete(session.id);
+}
+
+async function waitForKiroLoginStart(
+	sessions: Map<string, KiroLoginSession>,
+	session: KiroLoginSession,
+	signal: AbortSignal,
+): Promise<KiroLoginStartResponse> {
+	if (signal.aborted) {
+		cancelKiroLoginSession(sessions, session);
+		throw new Error(KIRO_LOGIN_CANCELLED_MESSAGE);
+	}
+	const aborted = Promise.withResolvers<never>();
+	const onAbort = (): void => {
+		session.controller.abort();
+		aborted.reject(new Error(KIRO_LOGIN_CANCELLED_MESSAGE));
+	};
+	signal.addEventListener("abort", onAbort, { once: true });
+	try {
+		return await Promise.race([session.startReady.promise, aborted.promise]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
+function runKiroLoginSession(
+	sessions: Map<string, KiroLoginSession>,
+	storage: AuthStorage,
+	session: KiroLoginSession,
+): void {
+	void (async () => {
+		try {
+			const identity = await storage.login("kiro", {
+				onAuth: info => {
+					if (session.started) return;
+					if (info.userCode === undefined || info.expiresAt === undefined || !Number.isFinite(info.expiresAt)) {
+						throw new Error("Kiro device login did not return a user code and expiry");
+					}
+					const started: KiroLoginStartResponse = {
+						sessionId: session.id,
+						url: info.url,
+						userCode: info.userCode,
+						expiresAt: info.expiresAt,
+					};
+					session.started = started;
+					session.startReady.resolve(started);
+					scheduleKiroLoginSessionCleanup(
+						sessions,
+						session,
+						Math.min(KIRO_LOGIN_MAX_LIFETIME_MS, Math.max(1, info.expiresAt - Date.now())),
+					);
+				},
+				onProgress: message => logger.info("auth-broker Kiro login progress", { message }),
+				onPrompt: async prompt => {
+					if (prompt.message === "Enter Start URL") return session.startUrl;
+					if (prompt.message === "Enter Region") return session.region;
+					throw new Error("Unexpected Kiro login prompt");
+				},
+				onSelect: async prompt => {
+					if (prompt.message === "Select Kiro login method") return "aws";
+					if (prompt.message === "Select a Kiro profile") return "1";
+					throw new Error("Unexpected Kiro selection prompt");
+				},
+				signal: session.controller.signal,
+			});
+			if (session.controller.signal.aborted) return;
+			if (!session.started || !identity) throw new Error(KIRO_LOGIN_ERROR_MESSAGE);
+			session.state = { status: "complete", identity };
+			scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_RESULT_RETENTION_MS);
+		} catch (error) {
+			if (session.state.status === "complete") return;
+			const message = session.controller.signal.aborted ? KIRO_LOGIN_CANCELLED_MESSAGE : KIRO_LOGIN_ERROR_MESSAGE;
+			session.state = { status: "error", message };
+			session.startReady.reject(error);
+			scheduleKiroLoginSessionCleanup(sessions, session, KIRO_LOGIN_RESULT_RETENTION_MS);
+			logger.warn("auth-broker Kiro login failed", { error: String(error) });
+		}
+	})();
+}
+
 /** Boot the broker. Caller owns lifecycle; `handle.close()` to stop. */
 export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServerHandle {
 	const bind = parseBind(opts.bind ?? DEFAULT_AUTH_BROKER_BIND);
@@ -656,6 +819,7 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 			});
 	refresher?.start();
 	const generationGate = new GenerationGate(opts.storage, externalChangePollMs);
+	const kiroSessions = new Map<string, KiroLoginSession>();
 
 	const server = Bun.serve({
 		hostname: bind.hostname,
@@ -674,6 +838,47 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 				if (!isAuthorized(req, tokens)) {
 					logger.info("auth-broker request unauthorized", { method: req.method, path: pathname, peer });
 					return json(401, { error: "unauthorized" });
+				}
+				if (req.method === "GET" && pathname === "/v1/login/kiro/defaults") {
+					const defaults = readKiroPromptDefaults(opts.storage.getOAuthLoginCache());
+					const body: KiroLoginDefaultsResponse = defaults ? { ...defaults } : {};
+					return json(200, body);
+				}
+				if (req.method === "POST" && pathname === "/v1/login/kiro") {
+					const parsed = await parseBody(req, getAuthBrokerWireSchemas().kiroLoginStartRequestSchema);
+					if (!parsed.ok) return parsed.response;
+					const request = parsed.data as KiroLoginStartRequest;
+					const session = createKiroLoginSession(kiroSessions, request.startUrl, request.region);
+					if (!session) return json(429, { error: "Too many active Kiro login sessions" });
+					runKiroLoginSession(kiroSessions, opts.storage, session);
+					try {
+						const started = await waitForKiroLoginStart(kiroSessions, session, req.signal);
+						if (req.signal.aborted) {
+							cancelKiroLoginSession(kiroSessions, session);
+							return empty(499);
+						}
+						return json(200, started);
+					} catch (error) {
+						cancelKiroLoginSession(kiroSessions, session);
+						if (req.signal.aborted) return empty(499);
+						logger.warn("auth-broker Kiro login start failed", { error: String(error) });
+						return json(502, { error: "Kiro login could not be started" });
+					}
+				}
+				const kiroSessionMatch = pathname.match(KIRO_LOGIN_STATUS_ROUTE);
+				if (kiroSessionMatch && (req.method === "GET" || req.method === "DELETE")) {
+					const session = kiroSessions.get(kiroSessionMatch[1]);
+					if (!session) return json(404, { error: "Kiro login session not found" });
+					if (req.method === "DELETE") {
+						cancelKiroLoginSession(kiroSessions, session);
+						const body: KiroLoginCancelResponse = { ok: true };
+						return json(200, body);
+					}
+					if (req.signal.aborted) {
+						cancelKiroLoginSession(kiroSessions, session);
+						return empty(499);
+					}
+					return json(200, session.state);
 				}
 				if (req.method === "GET" && pathname === "/v1/snapshot/stream") {
 					return serveSnapshotStream(req, opts.storage, refresher, peer, streamKeepaliveMs);
@@ -892,6 +1097,7 @@ export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServer
 		close: async () => {
 			refresher?.stop();
 			generationGate.close();
+			for (const session of [...kiroSessions.values()]) cancelKiroLoginSession(kiroSessions, session);
 			server.stop(true);
 		},
 	};

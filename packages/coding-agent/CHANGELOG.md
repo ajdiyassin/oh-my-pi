@@ -59,6 +59,10 @@
 ### Changed
 
 - Upgraded the bundled omptype schema engine: intersection and pipe operators, bigint and RegExp literals in the string DSL, Standard Schema V1 interop, JSON Schema import via fromJsonSchema(), and richer union/collection error reporting.
+### Added
+
+- Added the Kiro login flow to the interactive UI with AWS device login, API-key login, broker-hosted authentication, and an explicit deferred Builder ID option.
+
 ### Fixed
 
 - Fixed usage tombstone matching to keep same-email or same-account records visible when they belong to different organizations, while preserving safe same-org and org-only matching.

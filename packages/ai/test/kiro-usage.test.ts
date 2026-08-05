@@ -104,6 +104,44 @@ describe("kiro usage provider", () => {
 		expect(report!.metadata?.orgId).toBe("EXAMPLEPROFILE");
 	});
 
+	it("sanitizes provider-controlled display text before emitting usage reports", async () => {
+		const payload = livePayload({
+			overageConfiguration: { overageStatus: "OVERAGE_\nENABLED" },
+			subscriptionInfo: { subscriptionTitle: "Kiro\nPro\tTier" },
+			usageBreakdownList: [
+				{
+					...livePayload().usageBreakdownList[0],
+					displayName: "credit\u001b[31m\nmonthly",
+					displayNamePlural: `${"x".repeat(140)}\tcredits`,
+					currency: "USD\nbilling",
+					overageCharges: 4.82,
+				},
+			],
+		});
+		const longProfileArn = `arn:aws:codewhisperer:us-east-1:111122223333:profile/${"p".repeat(200)}`;
+		const report = await kiroUsageProvider.fetchUsage(
+			{ provider: "kiro", credential: credential({ orgId: longProfileArn }), signal: undefined },
+			ctx(payload),
+		);
+
+		const limit = report!.limits[0]!;
+		expect(limit.label).toHaveLength(128);
+		const scopeOrgId = limit.scope.orgId;
+		if (typeof scopeOrgId !== "string") throw new Error("expected bounded Kiro scope identity");
+		expect(scopeOrgId).toHaveLength(128);
+		const metadataOrgId = report!.metadata?.orgId;
+		if (typeof metadataOrgId !== "string") throw new Error("expected bounded Kiro metadata identity");
+		expect(metadataOrgId).toHaveLength(128);
+		expect(limit.scope.tier).toBe("Kiro Pro Tier");
+		expect(limit.notes).toContain("overage charges 4.82 USD billing");
+		const displayValues = [limit.label, scopeOrgId, metadataOrgId, ...(limit.notes ?? []), limit.window?.label ?? ""];
+		if (limit.scope.tier) displayValues.push(limit.scope.tier);
+		for (const value of displayValues) {
+			expect(value).not.toMatch(/[\u0000-\u001f\u007f]/);
+			expect(value.length).toBeLessThanOrEqual(128);
+		}
+	});
+
 	it("reports overage and bonus notes only from values the response stated", async () => {
 		const payload = livePayload({
 			overageConfiguration: { overageStatus: "OVERAGE_ENABLED" },
