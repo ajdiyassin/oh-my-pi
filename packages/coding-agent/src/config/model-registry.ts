@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, UsageProvider } from "@oh-my-pi/pi-ai";
-import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { assertNotNativeKiroRegistration, registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
@@ -1475,6 +1475,8 @@ export class ModelRegistry {
 		authoritative: boolean,
 	): Promise<string | undefined> {
 		const peekedKey = await this.#peekApiKeyForProvider(providerId);
+		const resolvedCacheProviderId =
+			providerId === "kiro" ? resolveModelCacheProviderId(providerId, { apiKey: peekedKey }) : cacheProviderId;
 		if (isAuthenticated(peekedKey) || strategy === "offline") {
 			return peekedKey;
 		}
@@ -1492,7 +1494,7 @@ export class ModelRegistry {
 			// Mirror shouldFetchRemoteSources: built-in managers use the catalog's
 			// default TTL, so only refresh when the manager will actually fetch.
 			const cache = readModelCache<Api>(
-				cacheProviderId,
+				resolvedCacheProviderId,
 				BUILT_IN_DISCOVERY_CACHE_TTL_MS,
 				Date.now,
 				this.#cacheDbPath,
@@ -2218,6 +2220,7 @@ export class ModelRegistry {
 	 * If provider has oauth: registers OAuth provider for /login support.
 	 */
 	registerProvider(providerName: string, config: ProviderConfigInput, sourceId?: string): void {
+		assertNotNativeKiroRegistration(providerName);
 		if (config.streamSimple && !config.api) {
 			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
 		}

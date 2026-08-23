@@ -3,9 +3,16 @@ import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
+import { extractKiroProfileSegment } from "@oh-my-pi/pi-catalog/wire/kiro";
 import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import {
+	getAgentDbPath,
+	getAgentDir,
+	getProjectDir,
+	normalizePathForComparison,
+	sanitizeText,
+} from "@oh-my-pi/pi-utils";
 import {
 	type AdvisorConfigScope,
 	discoverAdvisorConfigs,
@@ -108,6 +115,12 @@ import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
+
+function sanitizeIdentityLabel(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const normalized = sanitizeText(value).replace(/\s+/g, " ").trim().slice(0, 128);
+	return normalized || undefined;
+}
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -1771,13 +1784,14 @@ export class SelectorController {
 		try {
 			const identity = await this.ctx.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
 				signal: dialog.signal,
-				onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
+				onAuth: (info: { url: string; userCode?: string; launchUrl?: string; instructions?: string }) => {
 					// The dialog renders the full URL (SSH-safe copy target) and
 					// opens the browser best-effort.
-					dialog.showAuth(info.url, info.instructions, info.launchUrl);
+					dialog.showAuth(info.url, info.instructions, info.launchUrl, providerId !== "kiro", info.userCode);
 				},
-				onPrompt: (prompt: { message: string; placeholder?: string }) =>
-					dialog.showPrompt(prompt.message, prompt.placeholder),
+				onPrompt: (prompt: { message: string; placeholder?: string; defaultValue?: string }) =>
+					dialog.showPrompt(prompt.message, prompt.placeholder, prompt.defaultValue),
+				onSelect: prompt => dialog.showSelect(prompt),
 				onProgress: (message: string) => {
 					dialog.showProgress(message);
 				},
@@ -1789,6 +1803,10 @@ export class SelectorController {
 				// focus (#5339).
 				onManualCodeInput: useManualInput ? () => dialog.showManualInput(MANUAL_LOGIN_PROMPT) : undefined,
 			});
+			// A provider may finish without storing credentials (for example, the
+			// deferred Builder ID route). Do not refresh or present a success message
+			// unless AuthStorage confirms that an identity was persisted.
+			if (!identity) return false;
 			// Scope the post-login refresh to the just-authenticated provider with an
 			// `online` strategy: the default all-provider `online-if-uncached` reuses
 			// a fresh authoritative cache row (e.g. an empty result fetched before
@@ -1801,8 +1819,17 @@ export class SelectorController {
 			// Name the account (and Anthropic organization) that was stored so a
 			// login that lands on an unintended account/subscription is visible
 			// immediately instead of silently replacing an existing registration.
-			const whoBase = identity?.type === "oauth" ? (identity.email ?? identity.accountId) : undefined;
-			const whoOrg = identity?.type === "oauth" ? (identity.orgName ?? identity.orgId) : undefined;
+			const whoBase =
+				identity?.type === "oauth" && providerId !== "kiro"
+					? (sanitizeIdentityLabel(identity.email) ?? sanitizeIdentityLabel(identity.accountId))
+					: undefined;
+			const whoOrg =
+				identity?.type === "oauth"
+					? providerId === "kiro"
+						? (sanitizeIdentityLabel(identity.orgName) ??
+							sanitizeIdentityLabel(extractKiroProfileSegment(identity.orgId)))
+						: (sanitizeIdentityLabel(identity.orgName) ?? sanitizeIdentityLabel(identity.orgId))
+					: undefined;
 			const who = whoBase ? ` as ${whoBase}${whoOrg ? ` (${whoOrg})` : ""}` : whoOrg ? ` as ${whoOrg}` : "";
 			block.addChild(
 				new Text(

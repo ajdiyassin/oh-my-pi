@@ -109,4 +109,15 @@ describe("resolveEditMode", () => {
 			"hashline",
 		);
 	});
+
+	test("falls back from hashline to sloppy for Kiro models", () => {
+		expect(resolveEditMode(createSession({ activeModel: "kiro/gpt-5.6-luna" }))).toBe("sloppy");
+		expect(resolveEditMode(createSession({ activeModel: "kiro/gpt-5.6-sol" }))).toBe("sloppy");
+	});
+
+	test("keeps explicit Kiro model variants ahead of the fallback", () => {
+		expect(resolveEditMode(createSession({ activeModel: "kiro/gpt-5.6-luna", modelVariant: "hashline" }))).toBe(
+			"hashline",
+		);
+	});
 });

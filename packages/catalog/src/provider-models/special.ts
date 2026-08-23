@@ -2,9 +2,14 @@ import { once } from "@oh-my-pi/pi-utils";
 import { type CodexModelDiscoveryResult, fetchCodexModels } from "../discovery/codex";
 import type { DevinModelDiscoveryOptions } from "../discovery/devin";
 import { buildGitLabDuoWorkflowFallbackModel, fetchGitLabDuoWorkflowModels } from "../discovery/gitlab-duo-workflow";
+import { fetchKiroModels } from "../discovery/kiro";
 import type { ModelManagerOptions } from "../model-manager";
 import type { FetchImpl, ModelSpec } from "../types";
-import { resolveModelCacheProviderId } from "./cache-provider-id";
+import {
+	parseKiroDiscoveryCredential,
+	resolveKiroModelCacheProviderId,
+	resolveModelCacheProviderId,
+} from "./cache-provider-id";
 
 // ---------------------------------------------------------------------------
 // OpenAI Codex
@@ -202,6 +207,31 @@ export function devinModelManagerOptions(config: DevinModelManagerConfig = {}): 
 }
 
 const devinDiscovery = once(() => import("../discovery/devin"));
+
+// ---------------------------------------------------------------------------
+// Kiro
+// ---------------------------------------------------------------------------
+
+export interface KiroModelManagerConfig {
+	apiKey?: string;
+	fetch?: FetchImpl;
+}
+
+export function kiroModelManagerOptions(config: KiroModelManagerConfig = {}): ModelManagerOptions<"kiro-api"> {
+	const credential = config.apiKey ? parseKiroDiscoveryCredential(config.apiKey) : undefined;
+	return {
+		providerId: "kiro",
+		staticModels: [],
+		dynamicModelsAuthoritative: true,
+		cacheProviderId: resolveKiroModelCacheProviderId(config.apiKey),
+		...(credential
+			? {
+					fetchDynamicModels: async () => fetchKiroModels({ credential, fetch: config.fetch }),
+				}
+			: undefined),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Zai
 // ---------------------------------------------------------------------------

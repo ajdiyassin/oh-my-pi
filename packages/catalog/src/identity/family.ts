@@ -414,19 +414,28 @@ export const supportsMidConversationSystemMessages = memo((modelId: string): boo
 	return parsed !== null && isAnthropicAdaptiveGenAtLeast(parsed, "4.8");
 });
 
+const isKiroServedModelId = memo((modelId: string): boolean => modelId.toLowerCase().startsWith("kiro/"));
+
 /**
  * Models that reliably follow the hashline line-anchored edit dialect
  * (`[path#TAG]` headers plus 1-indexed anchors). Kimi, MiMo, DeepSeek V4
  * Flash, and Step 3.7 Flash miscount anchors or drop the tag header often
  * enough that hosts fall back to the sloppy edit format for
  * them.
+ *
+ * Kiro-served models are declined by provider prefix rather than family: the
+ * Kiro wire format carries JSON tool specifications only, so the
+ * grammar-constrained hashline variant cannot reach the model, and these
+ * models were trained on typed search-replace file tools instead. The same
+ * families follow hashline fine through their native providers.
  */
 export const supportsHashlineEdits = memo((modelId: string): boolean => {
 	return !(
 		isKimiModelId(modelId) ||
 		isMimoModelIdOrName(modelId) ||
 		isDeepseekV4FlashModelId(modelId) ||
-		isStep37FlashModelId(modelId)
+		isStep37FlashModelId(modelId) ||
+		isKiroServedModelId(modelId)
 	);
 });
 

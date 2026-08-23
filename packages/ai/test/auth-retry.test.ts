@@ -9,6 +9,7 @@ import {
 	withOAuthAccess,
 } from "@oh-my-pi/pi-ai";
 import { OAuthError, ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { KiroApiError } from "@oh-my-pi/pi-ai/providers/kiro/errors";
 
 function authError(status = 401): Error & { status: number } {
 	return Object.assign(new Error(`${status} authentication_error`), { status });
@@ -45,6 +46,17 @@ describe("isApiKeyResolver / resolveApiKeyOnce", () => {
 });
 
 describe("isAuthRetryableError", () => {
+	it("classifies Kiro auth, concurrency, transient-capacity, and quota responses correctly", () => {
+		expect(isAuthRetryableError(new KiroApiError("Kiro HTTP 401 Unauthorized", 401))).toBe(true);
+		expect(isAuthRetryableError(new KiroApiError("Kiro HTTP 403 access denied", 403))).toBe(true);
+		expect(isAuthRetryableError(new KiroApiError("Kiro HTTP 403 concurrent requests limit reached", 403))).toBe(
+			false,
+		);
+		expect(isAuthRetryableError(new KiroApiError("Kiro HTTP 429 Too many requests", 429))).toBe(false);
+		expect(isAuthRetryableError(new KiroApiError("Kiro HTTP 429 INSUFFICIENT_MODEL_CAPACITY", 429))).toBe(false);
+		expect(isAuthRetryableError(new KiroApiError("Kiro HTTP 429 quota exceeded", 429))).toBe(true);
+	});
+
 	it("retries typed token-refresh requests without treating other OAuth failures as retryable", () => {
 		expect(
 			isAuthRetryableError(

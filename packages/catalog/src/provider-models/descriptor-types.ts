@@ -30,7 +30,9 @@ export interface ProviderDescriptor {
 	providerId: string;
 	createModelManagerOptions(config: ModelManagerConfig): ModelManagerOptions<Api>;
 	/** Preferred model ID when no explicit selection is made. */
-	defaultModel: string;
+	defaultModel?: string;
+	/** When true, this provider must never be selected by automatic fallback. */
+	requiresExplicitModelSelection?: boolean;
 	/** When true, the runtime creates a model manager even without a valid API key (e.g. ollama). */
 	allowUnauthenticated?: boolean;
 	/** When true, successful runtime discovery replaces bundled provider models instead of merging fallback-only IDs. */
@@ -66,7 +68,9 @@ export function allowsUnauthenticatedCatalogDiscovery(descriptor: CatalogProvide
 export interface ProviderCatalogEntry {
 	readonly id: string;
 	/** Preferred model ID when no explicit selection is made. */
-	readonly defaultModel: string;
+	readonly defaultModel?: string;
+	/** When true, this provider must never be selected by automatic fallback. */
+	readonly requiresExplicitModelSelection?: boolean;
 	/** Environment variables consulted (in order) for the provider's runtime API-key env fallback. */
 	readonly envVars?: readonly string[];
 	/** Runtime model-manager factory. Omitted for catalog-only providers. */

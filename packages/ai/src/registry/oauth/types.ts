@@ -10,6 +10,20 @@ export type OAuthCredentials = {
 	email?: string;
 	accountId?: string;
 	apiEndpoint?: string;
+	/** Registered-client state used by the native Kiro IAM Identity Center flow. */
+	kiroClientId?: string;
+	kiroClientSecret?: string;
+	/** Unix epoch milliseconds; `0` means the registered client does not expire. */
+	kiroClientSecretExpiresAt?: number;
+	kiroTokenEndpoint?: string;
+	kiroAuthMethod?: "device";
+	kiroRegistrationVersion?: number;
+	kiroStartUrl?: string;
+	kiroOidcRegion?: string;
+	kiroScopes?: readonly string[];
+	kiroAccountType?: "iam-identity-center";
+	kiroProfileArn?: string;
+	kiroRuntimeRegion?: string;
 	/**
 	 * Organization/workspace the token is scoped to (e.g. an Anthropic org
 	 * UUID or a ChatGPT workspace id). Captured once at login; token refreshes
@@ -29,15 +43,44 @@ export type OAuthCredentials = {
 	authorizedAt?: number;
 };
 
+export type ApiKeyLoginCredentials = {
+	type: "api_key";
+	key: string;
+	apiEndpoint?: string;
+};
+
+export type ProviderLoginResult = OAuthCredentials | ApiKeyLoginCredentials | string;
+
+export type CredentialPolicy = "append" | "replace";
+
 export type OAuthProvider = OAuthProviderUnion;
 
 export type OAuthProviderId = OAuthProvider | (string & {});
 
+export interface OAuthLoginCache {
+	get(key: string, options?: { includeExpired?: boolean }): string | null;
+	set(key: string, value: string, expiresAtSec: number): void;
+	deletePrefix?(prefix: string): void;
+}
+
 export type OAuthPrompt = {
 	message: string;
 	placeholder?: string;
+	defaultValue?: string;
 	allowEmpty?: boolean;
 };
+
+export interface OAuthSelectOption {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+export interface OAuthSelectPrompt {
+	message: string;
+	options: readonly OAuthSelectOption[];
+	defaultValue?: string;
+}
 
 export type OAuthAuthInfo = {
 	/**
@@ -46,6 +89,10 @@ export type OAuthAuthInfo = {
 	 * string reaches the user unmodified.
 	 */
 	url: string;
+	/** One-time code shown alongside a device authorization URL. */
+	userCode?: string;
+	/** Epoch milliseconds after which a device authorization code expires. */
+	expiresAt?: number;
 	/**
 	 * Short loopback URL that 302-redirects to {@link url}. Provided by flows
 	 * that host the redirect on the same callback server they already run
@@ -75,8 +122,11 @@ export interface OAuthController {
 	onProgress?(message: string): void;
 	onManualCodeInput?(): Promise<string>;
 	onPrompt?(prompt: OAuthPrompt): Promise<string>;
+	onSelect?(prompt: OAuthSelectPrompt): Promise<string>;
 	signal?: AbortSignal;
 	fetch?: FetchImpl;
+	cache?: OAuthLoginCache;
+	sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 
 export interface OAuthLoginCallbacks extends OAuthController {
@@ -88,10 +138,12 @@ export interface OAuthProviderInterface {
 	readonly id: OAuthProviderId;
 	readonly name: string;
 	readonly sourceId?: string;
-	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials | string>;
+	login(callbacks: OAuthLoginCallbacks): Promise<ProviderLoginResult>;
 	/** Refresh a stored grant; the signal bounds provider network work to refresh ownership. */
 	refreshToken?(credentials: OAuthCredentials, signal?: AbortSignal): Promise<OAuthCredentials>;
 	getApiKey?(credentials: OAuthCredentials): string;
 	/** Store resulting OAuth credentials under a different provider id. */
 	readonly storeCredentialsAs?: string;
+	/** Whether a successful login appends to or replaces the provider's credential pool. */
+	readonly credentialPolicy?: CredentialPolicy;
 }

@@ -22,9 +22,12 @@ import { isUsageLimitOutcome } from "./error/rate-limit";
 import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
 import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./registry/oauth";
 import type {
+	ApiKeyLoginCredentials,
 	OAuthAuthInfo,
 	OAuthController,
 	OAuthCredentials,
+	OAuthLoginCache,
+	OAuthPrompt,
 	OAuthProvider,
 	OAuthProviderId,
 } from "./registry/oauth/types";
@@ -107,6 +110,7 @@ const ANTHROPIC_SESSION_STICKY_CACHE_WARM_MS = 60 * 60_000;
 export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
+	apiEndpoint?: string;
 	source?: "login";
 };
 
@@ -115,6 +119,19 @@ export type OAuthCredential = {
 } & OAuthCredentials;
 
 export type AuthCredential = ApiKeyCredential | OAuthCredential;
+
+function isApiKeyLoginResult(
+	result: string | OAuthCredentials | ApiKeyLoginCredentials,
+): result is string | ApiKeyLoginCredentials {
+	return (
+		typeof result === "string" ||
+		(typeof result === "object" && result !== null && "type" in result && result.type === "api_key")
+	);
+}
+
+function projectKiroApiKey(token: string | undefined, apiEndpoint: string | undefined): string | undefined {
+	return token && apiEndpoint ? JSON.stringify({ token, apiEndpoint }) : token;
+}
 
 export type AuthCredentialEntry = AuthCredential | AuthCredential[];
 
@@ -336,10 +353,15 @@ export interface CheckCredentialsOptions {
 export const REMOTE_REFRESH_SENTINEL = "__remote__" as const;
 export type RemoteRefreshSentinel = typeof REMOTE_REFRESH_SENTINEL;
 
-/** OAuth credential with refresh token replaced by the broker sentinel. */
-export type RemoteOAuthCredential = Omit<OAuthCredential, "refresh"> & {
+/** OAuth credential with refresh token and Kiro registered-client secret omitted from broker snapshots. */
+export type RemoteOAuthCredential = Omit<OAuthCredential, "refresh" | "kiroClientSecret"> & {
 	refresh: RemoteRefreshSentinel;
 };
+
+function redactRemoteOAuthCredential(credential: OAuthCredential): RemoteOAuthCredential {
+	const { refresh: _refresh, kiroClientSecret: _kiroClientSecret, ...withoutSecrets } = credential;
+	return { ...withoutSecrets, refresh: REMOTE_REFRESH_SENTINEL };
+}
 
 /** Discriminated credential payload as published by the broker. */
 export type SnapshotCredential = ApiKeyCredential | RemoteOAuthCredential;
@@ -858,6 +880,11 @@ export interface OAuthLoginIdentity {
 	orgName?: string;
 }
 
+type OAuthLoginController = OAuthController & {
+	onAuth: (info: OAuthAuthInfo) => void;
+	onPrompt: (prompt: OAuthPrompt) => Promise<string>;
+};
+
 export interface OAuthAccessFailure {
 	credentialId?: number;
 	accountId?: string;
@@ -1167,10 +1194,16 @@ function raceCredentialRefreshWithSignal<T>(
 	});
 }
 
+function optionalStringArraysEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+	if (left === right) return true;
+	if (!left || !right || left.length !== right.length) return false;
+	return left.every((value, index) => value === right[index]);
+}
+
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
-		return right.type === "api_key" && left.key === right.key;
+		return right.type === "api_key" && left.key === right.key && left.apiEndpoint === right.apiEndpoint;
 	}
 	if (right.type !== "oauth") return false;
 	return (
@@ -1180,7 +1213,22 @@ function authCredentialEquals(left: AuthCredential, right: AuthCredential): bool
 		left.accountId === right.accountId &&
 		left.email === right.email &&
 		left.projectId === right.projectId &&
-		left.enterpriseUrl === right.enterpriseUrl
+		left.enterpriseUrl === right.enterpriseUrl &&
+		left.apiEndpoint === right.apiEndpoint &&
+		left.orgId === right.orgId &&
+		left.orgName === right.orgName &&
+		left.kiroClientId === right.kiroClientId &&
+		left.kiroClientSecret === right.kiroClientSecret &&
+		left.kiroClientSecretExpiresAt === right.kiroClientSecretExpiresAt &&
+		left.kiroTokenEndpoint === right.kiroTokenEndpoint &&
+		left.kiroAuthMethod === right.kiroAuthMethod &&
+		left.kiroRegistrationVersion === right.kiroRegistrationVersion &&
+		left.kiroStartUrl === right.kiroStartUrl &&
+		left.kiroOidcRegion === right.kiroOidcRegion &&
+		optionalStringArraysEqual(left.kiroScopes, right.kiroScopes) &&
+		left.kiroAccountType === right.kiroAccountType &&
+		left.kiroProfileArn === right.kiroProfileArn &&
+		left.kiroRuntimeRegion === right.kiroRuntimeRegion
 	);
 }
 
@@ -2913,21 +2961,21 @@ export class AuthStorage {
 		return result;
 	}
 
+	#getOAuthLoginCache(): OAuthLoginCache {
+		return {
+			get: (key, options) => this.#store.getCache(key, options),
+			set: (key, value, expiresAtSec) => this.#store.setCache(key, value, expiresAtSec),
+			deletePrefix: prefix => this.#store.deleteCachePrefix?.(prefix),
+		};
+	}
+
 	/**
 	 * Login to an OAuth provider. Resolves with the stored credential's
 	 * identity slice (or `undefined` when nothing was stored) so callers can
 	 * surface which account — and for Anthropic, which organization — the
 	 * login registered.
 	 */
-	async login(
-		provider: OAuthProviderId,
-		ctrl: OAuthController & {
-			/** onAuth is required by auth-storage but optional in OAuthController */
-			onAuth: (info: OAuthAuthInfo) => void;
-			/** onPrompt is required for some providers (github-copilot, openai-codex) */
-			onPrompt: (prompt: { message: string; placeholder?: string }) => Promise<string>;
-		},
-	): Promise<OAuthLoginIdentity | undefined> {
+	async login(provider: OAuthProviderId, ctrl: OAuthLoginController): Promise<OAuthLoginIdentity | undefined> {
 		// Only paste-code providers (fixed non-loopback redirect, e.g. GitLab Duo
 		// Agent's vscode:// URI) get a default manual-code prompt. For loopback OAuth
 		// providers the `OAuthCallbackFlow` would otherwise race this readline prompt
@@ -2948,34 +2996,56 @@ export class AuthStorage {
 			onAuth: ctrl.onAuth,
 			onProgress: ctrl.onProgress,
 			onPrompt: ctrl.onPrompt,
+			onSelect: ctrl.onSelect,
 			onManualCodeInput: ctrl.onManualCodeInput ?? manualCodeInput,
 			signal: ctrl.signal,
 			fetch: ctrl.fetch,
+			cache: this.#getOAuthLoginCache(),
+			sleep: ctrl.sleep,
 		});
-		if (typeof result === "string") {
+		if (result === undefined || result === "") return undefined;
+		const storeProvider = def.storeCredentialsAs ?? provider;
+		const replace = def.credentialPolicy === "replace";
+		const apiKeyResult = isApiKeyLoginResult(result);
+		if (apiKeyResult) {
 			// Some flows (e.g. ollama) return "" to signal that no key was entered.
-			if (!result) {
-				return undefined;
-			}
-			const newCredential: ApiKeyCredential = { type: "api_key", key: result, source: "login" };
-			const stored = this.#store.upsertAuthCredentialRemote
-				? await this.#store.upsertAuthCredentialRemote(provider, newCredential)
-				: this.#store.upsertAuthCredentialForProvider(provider, newCredential);
+			const key = typeof result === "string" ? result : result.key;
+			if (!key) return undefined;
+			const newCredential: ApiKeyCredential = {
+				type: "api_key",
+				key,
+				source: "login",
+				...(typeof result === "string" || result.apiEndpoint === undefined
+					? {}
+					: { apiEndpoint: result.apiEndpoint }),
+			};
+			const stored = replace
+				? this.#store.replaceAuthCredentialsRemote
+					? await this.#store.replaceAuthCredentialsRemote(storeProvider, [newCredential])
+					: this.#store.replaceAuthCredentialsForProvider(storeProvider, [newCredential])
+				: this.#store.upsertAuthCredentialRemote
+					? await this.#store.upsertAuthCredentialRemote(storeProvider, newCredential)
+					: this.#store.upsertAuthCredentialForProvider(storeProvider, newCredential);
 			this.#setStoredCredentials(
-				provider,
+				storeProvider,
 				stored.map(entry => ({ id: entry.id, credential: entry.credential })),
 			);
-			this.#resetProviderAssignments(provider);
+			this.#resetProviderAssignments(storeProvider);
 			return { type: "api_key" };
 		}
 		// Stamp the interactive-login instant: providers with an absolute grant
 		// lifetime (Anthropic) need it to surface re-login deadlines, and token
 		// refreshes only ever merge over this credential without clearing it.
 		const newCredential: OAuthCredential = { type: "oauth", ...result, authorizedAt: Date.now() };
-		// Use #upsertOAuthCredential to upsert the new credential.
-		// Any legacy api_key rows from older versions will be cleaned up so they do not
-		// shadow the new OAuth row, while preserving other active OAuth credentials.
-		await this.#upsertOAuthCredential(def.storeCredentialsAs ?? provider, newCredential);
+		if (replace) {
+			await this.set(storeProvider, newCredential);
+		} else {
+			// Use #upsertOAuthCredential to upsert the new credential.
+			// Any legacy api_key rows from older versions will be cleaned up so they do not
+			// shadow the new OAuth row, while preserving other active OAuth credentials.
+			await this.#upsertOAuthCredential(storeProvider, newCredential);
+		}
+		if (storeProvider === "kiro") ctrl.onProgress?.("Logged in");
 		return {
 			type: "oauth",
 			email: newCredential.email,
@@ -3224,6 +3294,7 @@ export class AuthStorage {
 		const entry = this.#getStoredCredentials(provider).find(candidate => candidate.id === credentialId);
 		if (entry?.credential.type !== "oauth") return;
 		this.#replaceCredentialById(provider, credentialId, {
+			...entry.credential,
 			type: "oauth",
 			access: next.accessToken ?? entry.credential.access,
 			refresh: next.refreshToken ?? entry.credential.refresh,
@@ -5433,6 +5504,8 @@ export class AuthStorage {
 			}
 			if (!result) return undefined;
 			const updated: OAuthCredential = {
+				...selection.credential,
+				...result.newCredentials,
 				type: "oauth",
 				access: result.newCredentials.access,
 				refresh: result.newCredentials.refresh,
@@ -5444,6 +5517,12 @@ export class AuthStorage {
 				apiEndpoint: result.newCredentials.apiEndpoint ?? selection.credential.apiEndpoint,
 				orgId: result.newCredentials.orgId ?? selection.credential.orgId,
 				orgName: result.newCredentials.orgName ?? selection.credential.orgName,
+				kiroClientId: result.newCredentials.kiroClientId ?? selection.credential.kiroClientId,
+				kiroClientSecret: result.newCredentials.kiroClientSecret ?? selection.credential.kiroClientSecret,
+				kiroClientSecretExpiresAt:
+					result.newCredentials.kiroClientSecretExpiresAt ?? selection.credential.kiroClientSecretExpiresAt,
+				kiroTokenEndpoint: result.newCredentials.kiroTokenEndpoint ?? selection.credential.kiroTokenEndpoint,
+				kiroAuthMethod: result.newCredentials.kiroAuthMethod ?? selection.credential.kiroAuthMethod,
 				authorizedAt: result.newCredentials.authorizedAt ?? selection.credential.authorizedAt,
 			};
 			if (credentialId !== undefined) {
@@ -5529,7 +5608,9 @@ export class AuthStorage {
 	 * Peek at API key for a provider without refreshing OAuth tokens.
 	 * Used for model discovery where we only need to know if credentials exist
 	 * and get a best-effort token. For GitHub Copilot we preserve enterprise
-	 * routing metadata so discovery can hit the correct host.
+	 * routing metadata so discovery can hit the correct host. For Kiro we
+	 * preserve the selected profile and API-key endpoint in a structured value
+	 * consumed only by Kiro discovery.
 	 */
 	async peekApiKey(provider: string): Promise<string | undefined> {
 		const runtimeKey = this.#runtimeOverrides.get(provider);
@@ -5555,6 +5636,12 @@ export class AuthStorage {
 						apiEndpoint: oauthSelection.credential.apiEndpoint,
 					});
 				}
+				if (provider === "kiro") {
+					return JSON.stringify({
+						token: oauthSelection.credential.access,
+						profileArn: oauthSelection.credential.orgId,
+					});
+				}
 				return oauthSelection.credential.access;
 			}
 		}
@@ -5566,7 +5653,9 @@ export class AuthStorage {
 			credential => credential.type === "api_key" && credential.source === "login",
 		);
 		if (loginApiKeySelection) {
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const key = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (provider === "kiro") return projectKiroApiKey(key, loginApiKeySelection.credential.apiEndpoint);
+			return key;
 		}
 
 		const envKey = getEnvApiKey(provider);
@@ -5574,7 +5663,9 @@ export class AuthStorage {
 
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key");
 		if (apiKeySelection) {
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const key = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (provider === "kiro") return projectKiroApiKey(key, apiKeySelection.credential.apiEndpoint);
+			return key;
 		}
 
 		return this.#fallbackResolver?.(provider) ?? undefined;
@@ -5622,7 +5713,9 @@ export class AuthStorage {
 		);
 		if (loginApiKeySelection) {
 			this.#recordSessionCredential(provider, sessionId, "api_key", loginApiKeySelection.index);
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const key = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (provider === "kiro") return projectKiroApiKey(key, loginApiKeySelection.credential.apiEndpoint);
+			return key;
 		}
 
 		// Past OAuth: the session sticky (if any) is stale — the request authenticates via
@@ -5640,7 +5733,9 @@ export class AuthStorage {
 		);
 		if (apiKeySelection) {
 			this.#recordSessionCredential(provider, sessionId, "api_key", apiKeySelection.index);
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const key = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (provider === "kiro") return projectKiroApiKey(key, apiKeySelection.credential.apiEndpoint);
+			return key;
 		}
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
@@ -6570,7 +6665,7 @@ export class AuthStorage {
 			for (const entry of stored) {
 				const credential = entry.credential;
 				const redacted: SnapshotCredential =
-					credential.type === "api_key" ? credential : { ...credential, refresh: REMOTE_REFRESH_SENTINEL };
+					credential.type === "api_key" ? credential : redactRemoteOAuthCredential(credential);
 				entries.push({
 					id: entry.id,
 					provider,
@@ -6683,6 +6778,8 @@ export class AuthStorage {
 				throw error;
 			}
 			const updated: OAuthCredential = {
+				...attempted,
+				...refreshed,
 				type: "oauth",
 				access: refreshed.access,
 				refresh: refreshed.refresh,
@@ -6706,7 +6803,7 @@ export class AuthStorage {
 			return {
 				id,
 				provider,
-				credential: { ...updated, refresh: REMOTE_REFRESH_SENTINEL },
+				credential: redactRemoteOAuthCredential(updated),
 				identityKey: resolveCredentialIdentityKey(provider, updated),
 			};
 		}
@@ -6751,7 +6848,7 @@ export class AuthStorage {
 		return stored.map(entry => {
 			const persisted = entry.credential;
 			const redacted: SnapshotCredential =
-				persisted.type === "api_key" ? persisted : { ...persisted, refresh: REMOTE_REFRESH_SENTINEL };
+				persisted.type === "api_key" ? persisted : redactRemoteOAuthCredential(persisted);
 			return {
 				id: entry.id,
 				provider: entry.provider,

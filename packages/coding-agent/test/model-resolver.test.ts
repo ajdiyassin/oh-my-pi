@@ -364,6 +364,23 @@ function createOpusModel(provider: string, id: string, name: string): Model<"ant
 const allModels = [...mockModels, ...mockOpenRouterModels, ...mockProviderOverlapModels, ...mockCodexOverlapModels];
 
 describe("pickDefaultAvailableModel", () => {
+	test("does not automatically select an explicit-only Kiro provider", () => {
+		const kiroModel = buildModel({
+			id: "kiro-live-model",
+			name: "Kiro Live Model",
+			api: "kiro-api",
+			provider: "kiro",
+			baseUrl: "https://runtime.us-east-1.kiro.dev/",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 100_000,
+			maxTokens: 8_192,
+		});
+
+		expect(pickDefaultAvailableModel([kiroModel])).toBeUndefined();
+	});
+
 	test("prefers Codex OAuth over plain OpenAI for the shared GPT default", () => {
 		const result = pickDefaultAvailableModel(openaiGpt55Models);
 
@@ -373,7 +390,7 @@ describe("pickDefaultAvailableModel", () => {
 
 	test("keeps earlier unrelated provider defaults ahead of shared Codex defaults", () => {
 		const anthropicDefault = buildModel({
-			id: DEFAULT_MODEL_PER_PROVIDER.anthropic,
+			id: DEFAULT_MODEL_PER_PROVIDER.anthropic!,
 			name: "Anthropic Default",
 			api: "anthropic-messages",
 			provider: "anthropic",
@@ -440,8 +457,8 @@ describe("pickDefaultAvailableModel", () => {
 	});
 
 	test("prefers SuperGrok over paid xAI when both defaults are present", () => {
-		const paid = getBundledModel("xai", DEFAULT_MODEL_PER_PROVIDER.xai);
-		const oauth = getBundledModel("xai-oauth", DEFAULT_MODEL_PER_PROVIDER["xai-oauth"]);
+		const paid = getBundledModel("xai", DEFAULT_MODEL_PER_PROVIDER.xai!);
+		const oauth = getBundledModel("xai-oauth", DEFAULT_MODEL_PER_PROVIDER["xai-oauth"]!);
 		if (!paid || !oauth) {
 			throw new Error("Expected bundled xAI provider defaults");
 		}
@@ -1104,6 +1121,23 @@ describe("resolveAgentModelPatterns", () => {
 });
 
 describe("resolveModelFromString", () => {
+	test("resolves an explicit live Kiro provider/model reference", () => {
+		const kiroModel = buildModel({
+			id: "kiro-live-model",
+			name: "Kiro Live Model",
+			api: "kiro-api",
+			provider: "kiro",
+			baseUrl: "https://runtime.us-east-1.kiro.dev/",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 100_000,
+			maxTokens: 8_192,
+		});
+
+		expect(resolveModelFromString("kiro/kiro-live-model", [kiroModel])).toBe(kiroModel);
+	});
+
 	test("falls back to pattern parsing for provider/model:thinking when strict provider+id miss", () => {
 		const resolved = resolveModelFromString("openrouter/qwen/qwen3-coder:exacto:high", allModels);
 		expect(resolved?.provider).toBe("openrouter");

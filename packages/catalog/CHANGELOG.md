@@ -43,6 +43,12 @@
 
 ### Added
 
+- Added credential-scoped Kiro model discovery and cache namespaces for OAuth profiles and API keys.
+
+### Changed
+
+- Kiro-served models now decline the hashline edit dialect by provider prefix so hosts fall back to search-replace edits; the Kiro wire format cannot receive OMP's grammar-constrained edit variant.
+- Marked Kiro discovery as authoritative and explicit-only so the catalog does not fabricate a default model.
 - Added helper functions and constants for reading enterprise ChatGPT workspace data-residency regions from Codex OAuth access tokens and forwarding the residency header to Codex backend endpoints.
 
 ### Changed

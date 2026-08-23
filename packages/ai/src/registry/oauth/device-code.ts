@@ -15,6 +15,8 @@ export type OAuthDeviceCodePollResult<T> =
 	| { status: "slow_down" }
 	| { status: "failed"; message: string };
 
+export type OAuthDeviceCodeSleep = (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+
 /** Options for polling an RFC 8628-style OAuth device-code flow. */
 export interface OAuthDeviceCodeFlowOptions<T> {
 	/** Poll the provider once and classify the response. */
@@ -23,8 +25,12 @@ export interface OAuthDeviceCodeFlowOptions<T> {
 	intervalSeconds?: number;
 	/** Provider-issued expiry window for the device code. */
 	expiresInSeconds?: number;
+	/** Wait for the initial interval before the first poll. */
+	waitBeforeFirstPoll?: boolean;
 	/** Cancels the flow with the legacy "Login cancelled" error. */
 	signal?: AbortSignal;
+	/** Optional deterministic wait seam for callers that own the flow lifecycle. */
+	sleep?: OAuthDeviceCodeSleep;
 }
 
 async function abortableDeviceFlowSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -61,8 +67,15 @@ export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodeFlowOpt
 		Math.floor((options.intervalSeconds ?? DEFAULT_DEVICE_FLOW_INTERVAL_SECONDS) * 1000),
 	);
 	let slowDownResponses = 0;
+	let waitBeforePoll = options.waitBeforeFirstPoll === true;
+	const sleep = options.sleep ?? abortableDeviceFlowSleep;
 
 	while (Date.now() < deadline) {
+		if (waitBeforePoll) {
+			const remainingMs = deadline - Date.now();
+			if (remainingMs <= 0) break;
+			await sleep(Math.min(intervalMs, remainingMs), options.signal);
+		}
 		if (options.signal?.aborted) {
 			throw new AIError.LoginCancelledError(DEVICE_FLOW_CANCEL_MESSAGE);
 		}
@@ -77,12 +90,7 @@ export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodeFlowOpt
 			slowDownResponses += 1;
 			intervalMs = Math.max(MINIMUM_DEVICE_FLOW_INTERVAL_MS, intervalMs + SLOW_DOWN_INTERVAL_INCREMENT_MS);
 		}
-
-		const remainingMs = deadline - Date.now();
-		if (remainingMs <= 0) {
-			break;
-		}
-		await abortableDeviceFlowSleep(Math.min(intervalMs, remainingMs), options.signal);
+		waitBeforePoll = true;
 	}
 
 	throw new AIError.OAuthError(

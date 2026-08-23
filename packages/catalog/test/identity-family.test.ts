@@ -40,6 +40,15 @@ describe("supportsHashlineEdits", () => {
 		expect(supportsHashlineEdits("tensormesh/deepseek-ai/DeepSeek-V4-Flash")).toBe(false);
 		expect(supportsHashlineEdits("kilo/stepfun/step-3.7-flash:free")).toBe(false);
 	});
+	test("declines Kiro-served models by provider prefix", () => {
+		expect(supportsHashlineEdits("kiro/gpt-5.6-luna")).toBe(false);
+		expect(supportsHashlineEdits("kiro/gpt-5.6-sol")).toBe(false);
+		expect(supportsHashlineEdits("kiro/claude-opus-4-6")).toBe(false);
+	});
+	test("keeps lookalike ids and native routes hashline-capable", () => {
+		expect(supportsHashlineEdits("vendor/akiro-model")).toBe(true);
+		expect(supportsHashlineEdits("openai/gpt-5.6")).toBe(true);
+	});
 	test("vouches for structured-edit-capable models", () => {
 		expect(supportsHashlineEdits("google/gemini-3.5-flash")).toBe(true);
 		expect(supportsHashlineEdits("claude-fable-5")).toBe(true);

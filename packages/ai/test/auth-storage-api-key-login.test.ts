@@ -101,6 +101,23 @@ describe("AuthStorage api-key login upsert", () => {
 		expect(await authStorage.getApiKey("kagi", "session-kagi-relogin")).toBe("same-kagi-key");
 	});
 
+	it("projects a stored Kiro API-key endpoint into every provider credential projection", async () => {
+		if (!store || !authStorage) throw new Error("test setup failed");
+
+		const apiEndpoint = "https://runtime.eu-central-1.kiro.dev/";
+		store.upsertAuthCredentialForProvider("kiro", {
+			type: "api_key",
+			key: "kiro-login-key",
+			apiEndpoint,
+			source: "login",
+		});
+		await authStorage.reload();
+
+		const expected = JSON.stringify({ token: "kiro-login-key", apiEndpoint });
+		expect(await authStorage.getApiKey("kiro", "session-kiro-route")).toBe(expected);
+		expect(await authStorage.peekApiKey("kiro")).toBe(expected);
+	});
+
 	it("appends a different api-key row when re-login returns a new key", async () => {
 		if (!store || !authStorage || !dbPath) throw new Error("test setup failed");
 

@@ -69,6 +69,17 @@
 
 ### Added
 
+- Kiro requests now promote images returned by tools onto the paired user input message: tool results keep their text, status, and `toolUseId` pairing, image-only tool results carry a `(see attached image)` placeholder, and the image bytes travel through the capture-verified `userInputMessage.images` wire shape instead of failing the turn ([#12](https://github.com/ajdiyassin/oh-my-pi/issues/12)).
+- Kiro image serialization now accepts `image/gif` and `image/webp` alongside JPEG and PNG, following the Amazon Q image format enum; unsupported formats still fail closed before any request is sent.
+- Added a native Kiro provider with AWS IAM Identity Center device login, Kiro API-key login, profile selection, credential-scoped model discovery, AWS EventStream streaming, and native text, reasoning, tool, image, cancellation, and error handling.
+
+### Fixed
+
+- Fixed Kiro streams that ended after reasoning-only output by surfacing a recoverable empty response for session-level final-answer recovery.
+- Fixed long Kiro sessions replaying provisional reasoning as assistant speech, resending historical screenshots, fabricating tool-result carrier prose, emitting malformed tool histories, exceeding provider payload limits without local compaction recovery, and changing conversation identity between turns ([#13](https://github.com/ajdiyassin/oh-my-pi/issues/13)).
+- Hardened Kiro registration caching and refresh endpoint validation, including the canonical regional fallback when `tokenEndpoint` is omitted.
+- Redacted Kiro registered-client secrets alongside OAuth refresh tokens in generic remote credential snapshots.
+- Kiro OAuth token refresh now honors the caller's abort signal, bounding refresh network work to refresh ownership.
 - Added Codex Responses support for Code Mode, preserving tool modes and passing tool namespace metadata during sessions.
 
 ### Fixed

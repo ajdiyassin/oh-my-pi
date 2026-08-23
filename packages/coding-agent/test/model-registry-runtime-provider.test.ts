@@ -11,7 +11,7 @@ import {
 	getCustomApi,
 	type Model,
 } from "@oh-my-pi/pi-ai";
-import { getOAuthProviders, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import { getOAuthProvider, getOAuthProviders, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -139,6 +139,21 @@ describe("ModelRegistry runtime provider registration", () => {
 		expect(afterAnthropicCount).toBe(beforeAnthropicCount);
 	});
 
+	test("rejects native Kiro shadow registrations before mutating either extension registry", () => {
+		const sourceId = "ext://native-kiro-shadow";
+		const config: ProviderConfigInput = {
+			api: "kiro-api",
+			streamSimple,
+			oauth: {
+				name: "Shadow Kiro provider",
+				login: async () => "unused",
+			},
+		};
+
+		expect(() => registry.registerProvider("kiro", config, sourceId)).toThrow("Kiro is built into this OMP version.");
+		expect(getCustomApi("kiro-api")).toBeUndefined();
+		expect(getOAuthProvider("kiro")).toBeUndefined();
+	});
 	test("registerProvider rebuilds inferred computer capability after OpenAI runtime reroutes", async () => {
 		const modelId = "gpt-5.4";
 		const directModel = registry.find("openai", modelId);

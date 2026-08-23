@@ -64,6 +64,11 @@
 - Fixed Mermaid ASCII state pseudostates rendering empty boxes, miscoloring final-state borders, and inverting rounded corners in bottom-to-top diagrams.
 
 ## [17.2.11] - 2026-08-07
+### Added
+
+- Added bounded UTF-8 JSON response reading for provider registration and discovery paths.
+
+## [17.2.12] - 2026-08-08
 
 ### Added
 
