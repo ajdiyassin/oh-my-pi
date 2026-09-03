@@ -36,6 +36,7 @@
 		"auth/kagi.kdl",
 		"auth/kilo.kdl",
 		"auth/kimi-code.kdl",
+		"auth/kiro.kdl",
 		"auth/litellm.kdl",
 		"auth/llama.cpp.kdl",
 		"auth/lm-studio.kdl",
@@ -15873,6 +15874,24 @@
 							]
 						}
 					}
+				}
+			},
+			{
+				"id": "kiro",
+				"apiKeyFormat": "structured",
+				"name": "Kiro",
+				"env": {
+					"vars": [
+						"KIRO_API_KEY"
+					]
+				},
+				"login": {
+					"kind": "custom",
+					"hook": "kiro-login"
+				},
+				"refresh": {
+					"kind": "hook",
+					"hook": "kiro-refresh"
 				}
 			},
 			{

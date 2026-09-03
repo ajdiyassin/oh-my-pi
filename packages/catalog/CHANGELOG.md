@@ -35,6 +35,9 @@
 ### Changed
 
 - Improved model search and selection so configured roles, provider preferences, and recent usage are prioritized while browsing and filtering models.
+### Added
+
+- Added the native Kiro provider, including declarative authentication policy, credential-scoped live model discovery, and the `kiro-api` streaming transport.
 
 ## [18.1.5] - 2026-09-03
 

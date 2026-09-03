@@ -18,6 +18,9 @@
 ### Fixed
 
 - Fixed relaxed JSON parsing for single-quoted strings followed by line or block comments.
+### Added
+
+- Added bounded JSON body reading (`readBoundedJson`, `readBoundedBytes`) for size-limited response parsing.
 
 ## [18.1.5] - 2026-09-03
 

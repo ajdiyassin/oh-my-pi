@@ -109,6 +109,8 @@ export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
 	source?: "login";
+	/** Resolved runtime endpoint persisted alongside a login-stored key (e.g. Kiro). */
+	apiEndpoint?: string;
 };
 
 export type OAuthCredential = {
@@ -1178,7 +1180,7 @@ function raceCredentialRefreshWithSignal<T>(
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
-		return right.type === "api_key" && left.key === right.key;
+		return right.type === "api_key" && left.key === right.key && left.apiEndpoint === right.apiEndpoint;
 	}
 	if (right.type !== "oauth") return false;
 	return (
@@ -1297,6 +1299,11 @@ type UsageRankedCandidate<T extends AuthCredential> = UsageCandidate<T> & {
 };
 type RankedOAuthCandidate = UsageRankedCandidate<OAuthCredential>;
 type RankedApiKeyCandidate = UsageRankedCandidate<ApiKeyCredential>;
+
+/** Project a Kiro API key with its resolved runtime endpoint for discovery/transport. */
+function projectKiroApiKey(token: string | undefined, apiEndpoint: string | undefined): string | undefined {
+	return token && apiEndpoint ? JSON.stringify({ token, apiEndpoint }) : token;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AuthStorage Class
@@ -2697,6 +2704,11 @@ export class AuthStorage {
 						apiEndpoint: refreshed.apiEndpoint ?? current.apiEndpoint,
 						orgId: refreshed.orgId ?? current.orgId,
 						orgName: refreshed.orgName ?? current.orgName,
+						kiroClientId: refreshed.kiroClientId ?? current.kiroClientId,
+						kiroClientSecret: refreshed.kiroClientSecret ?? current.kiroClientSecret,
+						kiroClientSecretExpiresAt: refreshed.kiroClientSecretExpiresAt ?? current.kiroClientSecretExpiresAt,
+						kiroTokenEndpoint: refreshed.kiroTokenEndpoint ?? current.kiroTokenEndpoint,
+						kiroOidcRegion: refreshed.kiroOidcRegion ?? current.kiroOidcRegion,
 					};
 			if (this.#store.tryUpdateAuthCredentialIfMatches) {
 				if (
@@ -5612,6 +5624,12 @@ export class AuthStorage {
 				apiEndpoint: result.newCredentials.apiEndpoint ?? selection.credential.apiEndpoint,
 				orgId: result.newCredentials.orgId ?? selection.credential.orgId,
 				orgName: result.newCredentials.orgName ?? selection.credential.orgName,
+				kiroClientId: result.newCredentials.kiroClientId ?? selection.credential.kiroClientId,
+				kiroClientSecret: result.newCredentials.kiroClientSecret ?? selection.credential.kiroClientSecret,
+				kiroClientSecretExpiresAt:
+					result.newCredentials.kiroClientSecretExpiresAt ?? selection.credential.kiroClientSecretExpiresAt,
+				kiroTokenEndpoint: result.newCredentials.kiroTokenEndpoint ?? selection.credential.kiroTokenEndpoint,
+				kiroOidcRegion: result.newCredentials.kiroOidcRegion ?? selection.credential.kiroOidcRegion,
 				authorizedAt: result.newCredentials.authorizedAt ?? selection.credential.authorizedAt,
 			};
 			if (credentialId !== undefined) {
@@ -5734,7 +5752,9 @@ export class AuthStorage {
 			credential => credential.type === "api_key" && credential.source === "login",
 		);
 		if (loginApiKeySelection) {
-			return this.#configValueResolver(loginApiKeySelection.credential.key);
+			const key = await this.#configValueResolver(loginApiKeySelection.credential.key);
+			if (provider === "kiro") return projectKiroApiKey(key, loginApiKeySelection.credential.apiEndpoint);
+			return key;
 		}
 
 		const envKey = getEnvApiKey(provider);
@@ -5742,7 +5762,9 @@ export class AuthStorage {
 
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key");
 		if (apiKeySelection) {
-			return this.#configValueResolver(apiKeySelection.credential.key);
+			const key = await this.#configValueResolver(apiKeySelection.credential.key);
+			if (provider === "kiro") return projectKiroApiKey(key, apiKeySelection.credential.apiEndpoint);
+			return key;
 		}
 
 		return this.#fallbackResolver?.(provider) ?? undefined;
@@ -6851,8 +6873,15 @@ export class AuthStorage {
 		for (const [provider, stored] of this.#data) {
 			for (const entry of stored) {
 				const credential = entry.credential;
-				const redacted: SnapshotCredential =
-					credential.type === "api_key" ? credential : { ...credential, refresh: REMOTE_REFRESH_SENTINEL };
+				let redacted: SnapshotCredential;
+				if (credential.type === "api_key") {
+					redacted = credential;
+				} else {
+					// Kiro's OIDC client secret is a refresh-capable secret: never
+					// ship it to broker clients alongside the redacted snapshot.
+					const { kiroClientSecret: _kiroClientSecret, ...withoutSecrets } = credential;
+					redacted = { ...withoutSecrets, refresh: REMOTE_REFRESH_SENTINEL };
+				}
 				entries.push({
 					id: entry.id,
 					provider,

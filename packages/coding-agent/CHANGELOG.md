@@ -149,6 +149,9 @@
 - Fixed messages typed while an edit or write tool was streaming from discarding the completed tool call and triggering unnecessary regeneration.
 - Fixed self-hosted Firecrawl URLs with origin-only base URLs from gaining an extra slash.
 - Fixed omp commit auto-staging from including macOS Unicode-normalization duplicates or files ignored by nested .gitignore rules.
+### Added
+
+- Added Kiro provider support to `/login`, including `KIRO_API_KEY` configuration and help text.
 
 ## [18.1.5] - 2026-09-03
 

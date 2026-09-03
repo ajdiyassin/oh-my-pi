@@ -67,6 +67,7 @@ import {
 	cursorModelManagerOptions,
 	devinModelManagerOptions,
 	gitLabDuoWorkflowModelManagerOptions,
+	kiroModelManagerOptions,
 	zaiModelManagerOptions,
 } from "./special";
 
@@ -279,6 +280,14 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "kimi-for-coding",
 		createModelManagerOptions: (config: ModelManagerConfig) => kimiCodeModelManagerOptions(config),
 		catalogDiscovery: { label: "Kimi Code", envVars: ["KIMI_API_KEY"] },
+	},
+	{
+		id: "kiro",
+		defaultModel: "claude-opus-4-6",
+		envVars: ["KIRO_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => kiroModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Kiro", oauthProvider: "kiro" },
 	},
 	{
 		id: "litellm",
