@@ -1300,9 +1300,20 @@ type UsageRankedCandidate<T extends AuthCredential> = UsageCandidate<T> & {
 type RankedOAuthCandidate = UsageRankedCandidate<OAuthCredential>;
 type RankedApiKeyCandidate = UsageRankedCandidate<ApiKeyCredential>;
 
-/** Project a Kiro API key with its resolved runtime endpoint for discovery/transport. */
-function projectKiroApiKey(token: string | undefined, apiEndpoint: string | undefined): string | undefined {
-	return token && apiEndpoint ? JSON.stringify({ token, apiEndpoint }) : token;
+/**
+ * Project a Kiro credential for discovery/transport: the token plus its runtime
+ * endpoint and, for OAuth logins, the profile ARN (stored as `orgId`) that
+ * `ListAvailableModels` and `SendMessage` both require.
+ */
+function projectKiroApiKey(
+	token: string | undefined,
+	metadata?: { apiEndpoint?: string; profileArn?: string },
+): string | undefined {
+	if (!token) return token;
+	const apiEndpoint = metadata?.apiEndpoint;
+	const profileArn = metadata?.profileArn;
+	if (!apiEndpoint && !profileArn) return token;
+	return JSON.stringify({ token, ...(profileArn ? { profileArn } : {}), ...(apiEndpoint ? { apiEndpoint } : {}) });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5741,6 +5752,14 @@ export class AuthStorage {
 						apiEndpoint: oauthSelection.credential.apiEndpoint,
 					});
 				}
+				// Kiro: discovery needs the profile ARN (`orgId`) alongside the bearer;
+				// mirror the structured projection `getOAuthApiKey` builds for refreshes.
+				if (provider === "kiro") {
+					return projectKiroApiKey(oauthSelection.credential.access, {
+						apiEndpoint: oauthSelection.credential.apiEndpoint,
+						profileArn: oauthSelection.credential.orgId,
+					});
+				}
 				return oauthSelection.credential.access;
 			}
 		}
@@ -5753,7 +5772,8 @@ export class AuthStorage {
 		);
 		if (loginApiKeySelection) {
 			const key = await this.#configValueResolver(loginApiKeySelection.credential.key);
-			if (provider === "kiro") return projectKiroApiKey(key, loginApiKeySelection.credential.apiEndpoint);
+			if (provider === "kiro")
+				return projectKiroApiKey(key, { apiEndpoint: loginApiKeySelection.credential.apiEndpoint });
 			return key;
 		}
 
@@ -5763,7 +5783,8 @@ export class AuthStorage {
 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key");
 		if (apiKeySelection) {
 			const key = await this.#configValueResolver(apiKeySelection.credential.key);
-			if (provider === "kiro") return projectKiroApiKey(key, apiKeySelection.credential.apiEndpoint);
+			if (provider === "kiro")
+				return projectKiroApiKey(key, { apiEndpoint: apiKeySelection.credential.apiEndpoint });
 			return key;
 		}
 

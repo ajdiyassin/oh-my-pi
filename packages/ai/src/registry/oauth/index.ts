@@ -159,6 +159,10 @@ export async function getOAuthApiKey(
 					expiresAt: creds.expires,
 					email: creds.email,
 					accountId: creds.accountId,
+					// Kiro: login stores the profile ARN in `orgId`; discovery
+					// (ListAvailableModels) and the runtime stream both require it
+					// as `profileArn`. Other structured consumers ignore the key.
+					...(creds.orgId ? { profileArn: creds.orgId } : {}),
 				})
 			: creds.access;
 	return { newCredentials: creds, apiKey };

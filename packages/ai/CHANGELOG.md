@@ -54,6 +54,10 @@
 
 - Added `/login kiro` with AWS IAM Identity Center device flow, Builder ID placeholder, and `ksk_…` API-key validation, supporting the `KIRO_API_KEY` and `KIRO_API_REGION` environment variables.
 
+### Fixed
+
+- Fixed Kiro models missing from the model list for IAM Identity Center logins: discovery now receives the profile ARN stored at login instead of failing with `Invalid profileArn`.
+
 ## [18.1.5] - 2026-09-03
 
 ### Added
