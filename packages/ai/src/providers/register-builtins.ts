@@ -39,6 +39,7 @@ import type { DevinOptions } from "./devin";
 import type { GoogleOptions } from "./google";
 import type { GoogleGeminiCliOptions } from "./google-gemini-cli";
 import type { GoogleVertexOptions } from "./google-vertex";
+import type { KiroOptions } from "./kiro/types";
 import type { OllamaChatOptions } from "./ollama";
 import type { OpenAICodexResponsesOptions } from "./openai-codex-responses";
 import type { OpenAICompletionsOptions } from "./openai-completions";
@@ -90,6 +91,10 @@ interface GoogleVertexProviderModule {
 		context: Context,
 		options: GoogleVertexOptions,
 	) => AssistantMessageEventStream;
+}
+
+interface KiroProviderModule {
+	streamKiro: (model: Model<"kiro-api">, context: Context, options: KiroOptions) => AssistantMessageEventStream;
 }
 
 interface OpenAICodexResponsesProviderModule {
@@ -153,6 +158,7 @@ let azureOpenAIResponsesProviderModulePromise: Promise<LazyProviderModule<"azure
 let googleProviderModulePromise: Promise<LazyProviderModule<"google-generative-ai">> | undefined;
 let googleGeminiCliProviderModulePromise: Promise<LazyProviderModule<"google-gemini-cli">> | undefined;
 let googleVertexProviderModulePromise: Promise<LazyProviderModule<"google-vertex">> | undefined;
+let kiroProviderModulePromise: Promise<LazyProviderModule<"kiro-api">> | undefined;
 let openAICodexResponsesProviderModulePromise: Promise<LazyProviderModule<"openai-codex-responses">> | undefined;
 let openAICompletionsProviderModulePromise: Promise<LazyProviderModule<"openai-completions">> | undefined;
 let openAIResponsesProviderModulePromise: Promise<LazyProviderModule<"openai-responses">> | undefined;
@@ -407,6 +413,14 @@ function loadGoogleVertexProviderModule(): Promise<LazyProviderModule<"google-ve
 	return googleVertexProviderModulePromise;
 }
 
+function loadKiroProviderModule(): Promise<LazyProviderModule<"kiro-api">> {
+	kiroProviderModulePromise ||= import("./kiro/index").then(module => {
+		const provider = module as KiroProviderModule;
+		return { stream: provider.streamKiro };
+	});
+	return kiroProviderModulePromise;
+}
+
 function loadOpenAICodexResponsesProviderModule(): Promise<LazyProviderModule<"openai-codex-responses">> {
 	openAICodexResponsesProviderModulePromise ||= import("./openai-codex-responses").then(module => {
 		const provider = module as OpenAICodexResponsesProviderModule;
@@ -488,6 +502,7 @@ export const streamGoogleGeminiCli = createLazyStream(
 	GOOGLE_GEMINI_CLI_LAZY_STREAM_LIMITS,
 );
 export const streamGoogleVertex = createLazyStream(loadGoogleVertexProviderModule);
+export const streamKiro = createLazyStream(loadKiroProviderModule, PROVIDER_HANDLED_STREAM_TIMEOUTS);
 export const streamOpenAICodexResponses = createLazyStream(
 	loadOpenAICodexResponsesProviderModule,
 	PROVIDER_HANDLED_STREAM_TIMEOUTS,

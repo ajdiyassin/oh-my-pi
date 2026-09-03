@@ -9,7 +9,7 @@ import { getBundledModel } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec } from "../types";
 import { DEVIN_DEFAULT_BASE_URL } from "../wire/devin";
 import { toModelSpec } from "./bundled-references";
-import { resolveModelCacheProviderId } from "./cache-provider-id";
+import { parseKiroDiscoveryCredential, resolveModelCacheProviderId } from "./cache-provider-id";
 
 // ---------------------------------------------------------------------------
 // OpenAI Codex
@@ -398,6 +398,36 @@ export function devinModelManagerOptions(config: DevinModelManagerConfig = {}): 
 }
 
 const devinDiscovery = once(() => import("../discovery/devin"));
+
+// ---------------------------------------------------------------------------
+// Kiro
+// ---------------------------------------------------------------------------
+
+export interface KiroModelManagerConfig {
+	apiKey?: string;
+	fetch?: FetchImpl;
+}
+
+export function kiroModelManagerOptions(config: KiroModelManagerConfig = {}): ModelManagerOptions<"kiro-api"> {
+	return {
+		providerId: "kiro",
+		staticModels: [],
+		dynamicModelsAuthoritative: true,
+		cacheProviderId: resolveModelCacheProviderId("kiro", { apiKey: config.apiKey }),
+		...(config.apiKey
+			? {
+					fetchDynamicModels: async () => {
+						const { fetchKiroModels } = await kiroDiscovery();
+						const credential = parseKiroDiscoveryCredential(config.apiKey as string);
+						return fetchKiroModels({ credential, fetch: config.fetch });
+					},
+				}
+			: undefined),
+	};
+}
+
+const kiroDiscovery = once(() => import("../discovery/kiro"));
+
 // ---------------------------------------------------------------------------
 // Zai
 // ---------------------------------------------------------------------------

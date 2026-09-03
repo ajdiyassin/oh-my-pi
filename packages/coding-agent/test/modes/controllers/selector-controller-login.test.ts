@@ -30,6 +30,7 @@ describe("SelectorController login", () => {
 		const authStorage = {
 			login: vi.fn(async () => {
 				loginSaved.resolve();
+				return { type: "oauth", email: "user@example.com" };
 			}),
 		} as unknown as AuthStorage;
 		const refresh = vi.fn(() => new Promise<void>(() => {}));
@@ -129,5 +130,32 @@ describe("SelectorController login", () => {
 		dialog.handleInput("\n");
 
 		await expect(prompt).resolves.toBe("OMP_PASTE_TEST_123");
+	});
+
+	it("skips refresh and success when login stores no credential (deferred route)", async () => {
+		const presentedBlocks: unknown[] = [];
+		const authStorage = {
+			login: vi.fn(async () => undefined),
+		} as unknown as AuthStorage;
+		const refreshProvider = vi.fn(async () => {});
+		const ctx = {
+			oauthManualInput: { waitForInput: vi.fn(), clear: vi.fn() },
+			session: { modelRegistry: { authStorage, refreshProvider } },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn(), children: [] },
+			editor: {},
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			present: vi.fn((block: unknown) => {
+				presentedBlocks.push(block);
+			}),
+			openInBrowser: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new SelectorController(ctx);
+
+		await controller.showOAuthSelector("login", "kiro");
+		expect(refreshProvider).not.toHaveBeenCalled();
+		expect(renderPresented(presentedBlocks)).not.toContain("Successfully logged in");
+		expect(ctx.showError).not.toHaveBeenCalled();
 	});
 });
