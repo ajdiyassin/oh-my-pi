@@ -3,10 +3,17 @@ import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { type Model, PASTE_CODE_LOGIN_PROVIDERS, type UsageReport } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
+import { extractKiroProfileSegment } from "@oh-my-pi/pi-catalog/wire/kiro";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import {
+	getAgentDbPath,
+	getAgentDir,
+	getProjectDir,
+	normalizePathForComparison,
+	sanitizeText,
+} from "@oh-my-pi/pi-utils";
 import {
 	type AdvisorConfigScope,
 	discoverAdvisorConfigs,
@@ -115,6 +122,12 @@ import { renderUsageReports } from "./command-controller";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
+
+function sanitizeIdentityLabel(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const normalized = sanitizeText(value).replace(/\s+/g, " ").trim().slice(0, 128);
+	return normalized || undefined;
+}
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -2017,6 +2030,10 @@ export class SelectorController {
 					? signal => dialog.showManualInput(MANUAL_LOGIN_PROMPT, signal)
 					: undefined,
 			});
+			// A provider may finish without storing credentials (for example, a
+			// deferred login route or an empty key entry). Do not refresh or
+			// present a success message unless AuthStorage confirms persistence.
+			if (!identity) return false;
 			// Scope the post-login refresh to the just-authenticated provider with an
 			// `online` strategy: the default all-provider `online-if-uncached` reuses
 			// a fresh authoritative cache row (e.g. an empty result fetched before
@@ -2029,8 +2046,20 @@ export class SelectorController {
 			// Name the account (and Anthropic organization) that was stored so a
 			// login that lands on an unintended account/subscription is visible
 			// immediately instead of silently replacing an existing registration.
-			const whoBase = identity?.type === "oauth" ? (identity.email ?? identity.accountId) : undefined;
-			const whoOrg = identity?.type === "oauth" ? (identity.orgName ?? identity.orgId) : undefined;
+			const whoBase =
+				identity?.type === "oauth" && providerId !== "kiro"
+					? (sanitizeIdentityLabel(identity.email) ?? sanitizeIdentityLabel(identity.accountId))
+					: undefined;
+			// Kiro has no email/account identity: name the selected AWS profile
+			// via its ARN-safe segment instead of echoing the raw ARN (which
+			// embeds the AWS account id and must never reach the terminal).
+			const whoOrg =
+				identity?.type === "oauth"
+					? providerId === "kiro"
+						? (sanitizeIdentityLabel(identity.orgName) ??
+							sanitizeIdentityLabel(extractKiroProfileSegment(identity.orgId)))
+						: (sanitizeIdentityLabel(identity.orgName) ?? sanitizeIdentityLabel(identity.orgId))
+					: undefined;
 			const who = whoBase ? ` as ${whoBase}${whoOrg ? ` (${whoOrg})` : ""}` : whoOrg ? ` as ${whoOrg}` : "";
 			block.addChild(
 				new Text(

@@ -20,6 +20,16 @@ export type OAuthCredentials = {
 	/** Human-readable organization name for display (may embed the email). */
 	orgName?: string;
 	/**
+	 * Kiro IAM Identity Center device-grant binding. The OIDC client
+	 * registration is per-region and server-issued, so refresh must reuse the
+	 * exact client; these fields persist that binding alongside the grant.
+	 */
+	kiroClientId?: string;
+	kiroClientSecret?: string;
+	kiroClientSecretExpiresAt?: number;
+	kiroTokenEndpoint?: string;
+	kiroOidcRegion?: string;
+	/**
 	 * Epoch ms of the interactive login that minted this grant. Set by
 	 * `AuthStorage.login`; token refreshes preserve it. Providers with an
 	 * absolute grant lifetime (Anthropic expires the whole refresh-token

@@ -69,6 +69,11 @@ export const oauthCredentialSchema: FluentType<OAuthCredential> = type({
 	"orgId?": "string",
 	"orgName?": "string",
 	"authorizedAt?": "number",
+	"kiroClientId?": "string",
+	"kiroClientSecret?": "string",
+	"kiroClientSecretExpiresAt?": "number",
+	"kiroTokenEndpoint?": "string",
+	"kiroOidcRegion?": "string",
 });
 
 /** OAuth credential as it appears in broker snapshots — refresh replaced with sentinel. */
@@ -85,6 +90,11 @@ export const remoteOauthCredentialSchema: FluentType<RemoteOAuthCredential> = ty
 	"orgId?": "string",
 	"orgName?": "string",
 	"authorizedAt?": "number",
+	"kiroClientId?": "string",
+	"kiroClientSecret?": "string",
+	"kiroClientSecretExpiresAt?": "number",
+	"kiroTokenEndpoint?": "string",
+	"kiroOidcRegion?": "string",
 });
 
 export const apiKeyCredentialSchema: FluentType<ApiKeyCredential> = type({

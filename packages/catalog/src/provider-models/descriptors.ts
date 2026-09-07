@@ -34,6 +34,7 @@ import {
 	litellmModelManagerOptions,
 	lmStudioModelManagerOptions,
 	metaModelManagerOptions,
+	museCodeModelManagerOptions,
 	mistralModelManagerOptions,
 	moonshotModelManagerOptions,
 	nanoGptModelManagerOptions,
@@ -67,6 +68,7 @@ import {
 	cursorModelManagerOptions,
 	devinModelManagerOptions,
 	gitLabDuoWorkflowModelManagerOptions,
+	kiroModelManagerOptions,
 	zaiModelManagerOptions,
 } from "./special";
 
@@ -281,6 +283,14 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "Kimi Code", envVars: ["KIMI_API_KEY"] },
 	},
 	{
+		id: "kiro",
+		defaultModel: "claude-opus-4-6",
+		envVars: ["KIRO_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => kiroModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Kiro", oauthProvider: "kiro" },
+	},
+	{
 		id: "litellm",
 		defaultModel: "claude-opus-4-8",
 		envVars: ["LITELLM_API_KEY"],
@@ -314,6 +324,12 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "devstral-medium-latest",
 		envVars: ["MISTRAL_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => mistralModelManagerOptions(config),
+	},
+	{
+		id: "muse-code",
+		defaultModel: "muse-spark-1.3",
+		createModelManagerOptions: (config: ModelManagerConfig) => museCodeModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
 	},
 	{
 		id: "meta",
