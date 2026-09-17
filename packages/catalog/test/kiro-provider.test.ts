@@ -82,10 +82,19 @@ describe("Kiro provider discovery", () => {
 		const descriptor = PROVIDER_DESCRIPTORS.find(item => item.providerId === "kiro");
 
 		expect(descriptor).toBeDefined();
-		expect(descriptor?.defaultModel).toBe("claude-opus-4-6");
+		expect(descriptor?.defaultModel).toBe("auto");
 		expect(descriptor?.dynamicModelsAuthoritative).toBe(true);
-		expect(DEFAULT_MODEL_PER_PROVIDER["kiro"]).toBe("claude-opus-4-6");
+		expect(DEFAULT_MODEL_PER_PROVIDER["kiro"]).toBe("auto");
 		expect(descriptor?.catalogDiscovery).toEqual({ label: "Kiro", envVars: ["KIRO_API_KEY"], oauthProvider: "kiro" });
+	});
+
+	test("opts out of cross-provider same-id reference fills for authoritative discovery", () => {
+		const descriptor = PROVIDER_DESCRIPTORS.find(item => item.providerId === "kiro");
+
+		// The same-id overlay would overwrite Kiro's deployment-specific tokenizer
+		// and context values with another host's rows (Kiro serves claude/gpt ids
+		// that collide with upstream seed rows).
+		expect(descriptor?.skipCrossProviderReferenceFills).toBe(true);
 	});
 
 	test("ignores missing, malformed, unknown, and known defaultModel metadata", () => {

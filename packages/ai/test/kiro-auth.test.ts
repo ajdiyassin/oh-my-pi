@@ -191,14 +191,14 @@ describe("Kiro authentication", () => {
 	});
 
 	it("routes API selection to the existing API-key validation path", async () => {
-		const prompts: string[] = [];
+		const prompts: OAuthPrompt[] = [];
 		let called = false;
 		let calls = 0;
 		await expect(
 			loginKiroHook({
 				onAuth: () => {},
 				onPrompt: async (prompt: OAuthPrompt) => {
-					prompts.push(prompt.message);
+					prompts.push(prompt);
 					calls += 1;
 					return calls === 1 ? "3" : "not-a-key";
 				},
@@ -208,9 +208,28 @@ describe("Kiro authentication", () => {
 				},
 			}),
 		).rejects.toMatchObject({ kind: "validation" });
-		expect(prompts[0]).toContain("Select Kiro login method");
-		expect(prompts).toContain("Paste your Kiro API key");
+		expect(prompts[0]?.message).toContain("Select Kiro login method");
+		expect(prompts).toContainEqual(expect.objectContaining({ message: "Paste your Kiro API key" }));
 		expect(called).toBe(false);
+	});
+
+	it("requests masked entry for the Kiro API key so hosts can hide input", async () => {
+		const prompts: OAuthPrompt[] = [];
+		let calls = 0;
+		await expect(
+			loginKiroHook({
+				onAuth: () => {},
+				onPrompt: async (prompt: OAuthPrompt) => {
+					prompts.push(prompt);
+					calls += 1;
+					return calls === 1 ? "3" : "not-a-key";
+				},
+				fetch: async () => json(modelCatalog()),
+			}),
+		).rejects.toMatchObject({ kind: "validation" });
+
+		const apiKeyPrompt = prompts.find(prompt => prompt.message === "Paste your Kiro API key");
+		expect(apiKeyPrompt?.secret).toBe(true);
 	});
 
 	it("rejects an invalid Start URL before registering a client", async () => {

@@ -48,7 +48,7 @@ Model discovery is credential-scoped:
 - API-key discovery uses the key's resolved runtime endpoint.
 - Cached models are restored only after the selected Kiro credential is known.
 
-Kiro defaults to `claude-opus-4-6` when no explicit model is selected; online discovery replaces the catalog with the account's live models. A cache entry for one profile, API key, or endpoint is not reused for another. If models disappear after switching accounts, log in again and allow discovery to complete.
+Kiro defaults to `auto` when no explicit model is selected; online discovery replaces the catalog with the account's live models. A cache entry for one profile, API key, or endpoint is not reused for another. If models disappear after switching accounts, log in again and allow discovery to complete.
 
 ## Builder
 

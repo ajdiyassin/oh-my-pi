@@ -289,6 +289,9 @@
 ### Fixed
 
 - Fixed Anthropic prompt-cache breakpoints stalling when conversations include mid-conversation tool changes, preventing growing message tails from being unnecessarily re-billed as uncached input.
+### Changed
+
+- The Kiro API-key login prompt now requests masked input (`secret: true`), so interactive hosts hide the pasted key instead of echoing it.
 
 ## [18.2.4] - 2026-09-17
 

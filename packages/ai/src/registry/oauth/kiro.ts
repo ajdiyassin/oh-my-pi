@@ -798,7 +798,7 @@ export async function loginKiroHook(ctrl: OAuthController): Promise<OAuthCredent
 	}
 	const apiKey = await requirePrompt(
 		ctrl.onPrompt,
-		{ message: "Paste your Kiro API key", placeholder: "ksk_..." },
+		{ message: "Paste your Kiro API key", placeholder: "ksk_...", secret: true },
 		"Kiro API key",
 	);
 	throwIfCancelled(ctrl.signal);

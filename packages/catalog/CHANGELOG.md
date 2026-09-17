@@ -249,6 +249,8 @@
 ### Fixed
 
 - Corrected Yolo-Auto metadata for Qwen Flash: `qwen3.8-flash` and the paid `yolo` route now report the documented 256K context window and use the Qwen chat-template reasoning dialect, with `qwen3.8-flash` as the provider default.
+- Kiro's default model is now `auto`; online discovery replaces the fallback with the account's live models.
+- Kiro opts out of cross-provider same-id catalog reference fills, so discovery-backed context and tokenizer values are no longer overwritten by colliding rows from other hosts.
 
 ## [18.2.4] - 2026-09-17
 
