@@ -1,6 +1,7 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
 import { getOAuthApiKey } from "@oh-my-pi/pi-ai/registry/oauth";
 import {
 	KIRO_AUTH_MAX_ATTEMPTS,
@@ -501,8 +502,54 @@ describe("Kiro authentication", () => {
 		}
 	});
 
+	it("keeps the OIDC client secret out of a forced-refresh response", async () => {
+		const store = await SqliteAuthCredentialStore.open(":memory:");
+		const authStorage = new AuthStorage(store);
+		const loginResponses: Response[] = [
+			json(registeredClient("us-east-1", undefined, false)),
+			json(deviceAuthorization()),
+			json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 }),
+			...profileResponses(),
+		];
+		const refreshSpy = spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(
+			async (_provider: string, credential: OAuthCredentials) => ({
+				...credential,
+				access: "next-access",
+				expires: Date.now() + 3_600_000,
+			}),
+		);
+		try {
+			await authStorage.oauth.login("kiro", {
+				onAuth: () => {},
+				onPrompt: async (prompt: OAuthPrompt) => {
+					if (prompt.message.includes("Select Kiro login method")) return "1";
+					return prompt.message === "Enter Start URL" ? "https://example.awsapps.com/start" : "us-east-1";
+				},
+				fetch: async () => loginResponses.shift() ?? json({}, 500),
+			});
+			const id = store.listAuthCredentials("kiro")[0]?.id;
+			if (id === undefined) throw new Error("expected a stored kiro credential");
+
+			// The broker serves this entry verbatim over POST /v1/credential/:id/refresh,
+			// so the refresh-capable client secret must not be part of it.
+			const entry = await authStorage.oauth.refresh(id);
+			expect(refreshSpy).toHaveBeenCalled();
+			expect(entry.credential.type).toBe("oauth");
+			expect(entry.credential).not.toHaveProperty("kiroClientSecret");
+			expect(entry.credential).toMatchObject({ kiroClientId: "client-id" });
+		} finally {
+			refreshSpy.mockRestore();
+			authStorage.close();
+		}
+	});
+
 	it("labels the login with a profile name or ARN-safe segment, never the raw ARN", async () => {
-		for (const profile of [{ arn: PROFILE_TWO, profileName: "Work" }, { arn: PROFILE_TWO }]) {
+		// A named profile labels itself; a nameless one must fall back to the
+		// ARN's trailing segment, never the ARN (which embeds the account id).
+		for (const [profile, expectedLabel] of [
+			[{ arn: PROFILE_TWO, profileName: "Work" }, "Work"],
+			[{ arn: PROFILE_TWO }, "two"],
+		] as const) {
 			const store = await SqliteAuthCredentialStore.open(":memory:");
 			const authStorage = new AuthStorage(store);
 			const responses: Response[] = [
@@ -522,14 +569,34 @@ describe("Kiro authentication", () => {
 					fetch: async () => responses.shift() ?? json({}, 500),
 				});
 
-				// Consumers render `orgName` as the account label; the raw ARN embeds
-				// the AWS account id and must never reach that surface.
-				expect(identity?.orgName).not.toBe(PROFILE_TWO);
-				expect(identity?.orgName).not.toContain("123456789012");
+				// Consumers render `orgName` as the account label, so it must be a
+				// real display label — not undefined, and never the raw ARN.
+				expect(identity?.orgName).toBe(expectedLabel);
 				expect(identity?.orgId).toBe(PROFILE_TWO);
 			} finally {
 				authStorage.close();
 			}
+		}
+	});
+
+	it("persists the resolved endpoint on a stored Kiro API key", async () => {
+		const endpoint = "https://runtime.eu-central-1.kiro.dev/";
+		const store = await SqliteAuthCredentialStore.open(":memory:");
+		const authStorage = new AuthStorage(store);
+		try {
+			await authStorage.credentials.set("kiro", { type: "api_key", key: "ksk_persisted", apiEndpoint: endpoint });
+			await authStorage.credentials.reload();
+
+			// The endpoint is part of the credential's identity: it selects the Kiro
+			// model-cache namespace, so losing it across a reload would restore the
+			// wrong cache after a restart.
+			const stored = store.listAuthCredentials("kiro")[0]?.credential;
+			expect(stored).toMatchObject({ type: "api_key", key: "ksk_persisted", apiEndpoint: endpoint });
+			expect(await authStorage.keys.peek("kiro")).toBe(
+				JSON.stringify({ token: "ksk_persisted", apiEndpoint: endpoint }),
+			);
+		} finally {
+			authStorage.close();
 		}
 	});
 

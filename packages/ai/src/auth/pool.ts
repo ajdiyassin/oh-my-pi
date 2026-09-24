@@ -32,8 +32,12 @@ function fingerprintOAuthBearer(bearer: string): string {
  * OAuth refresh tokens become the sentinel; the Kiro OIDC client secret is a
  * refresh-capable secret too, so it is dropped while the non-secret client
  * binding (client id, token endpoint, region) survives for routing.
+ *
+ * Every path that hands a credential to the auth-broker (snapshot, upsert, and
+ * the forced-refresh response) must route through this helper; a site that
+ * spreads the credential and overrides only `refresh` still ships the secret.
  */
-function redactCredentialForWire(credential: AuthCredential): SnapshotCredential {
+export function redactCredentialForWire(credential: AuthCredential): SnapshotCredential {
 	if (credential.type === "api_key") return credential;
 	const { kiroClientSecret: _kiroClientSecret, ...withoutSecrets } = credential;
 	return { ...withoutSecrets, refresh: REMOTE_REFRESH_SENTINEL };

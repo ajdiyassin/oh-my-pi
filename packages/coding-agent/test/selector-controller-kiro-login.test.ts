@@ -58,4 +58,14 @@ describe("SelectorController Kiro login", () => {
 		expect(output).not.toContain("arn:");
 		expect(output).not.toContain("123456789012");
 	});
+
+	it("renders the ARN-safe segment a nameless profile falls back to", async () => {
+		// loginKiroHook guarantees orgName is a display label even when the AWS
+		// profile carries no name, so the controller receives the segment itself.
+		const output = await loginKiro("two");
+
+		expect(output).toContain("Successfully logged in to kiro as two");
+		expect(output).not.toContain("arn:");
+		expect(output).not.toContain("123456789012");
+	});
 });
