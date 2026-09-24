@@ -57,13 +57,13 @@ describe("AuthStorage credential login policy", () => {
 
 	it("set() replaces the whole provider pool", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
-		await authStorage.set(PROVIDER_ID, [
+		await authStorage.credentials.set(PROVIDER_ID, [
 			{ type: "api_key", key: "old-key" },
 			{ type: "api_key", key: "other-old-key" },
 		]);
 		expect(store.listAuthCredentials(PROVIDER_ID)).toHaveLength(2);
 
-		await authStorage.set(PROVIDER_ID, [{ type: "api_key", key: "new-key" }]);
+		await authStorage.credentials.set(PROVIDER_ID, [{ type: "api_key", key: "new-key" }]);
 
 		expect(store.listAuthCredentials(PROVIDER_ID).map(entry => entry.credential)).toEqual([
 			{ type: "api_key", key: "new-key" },
@@ -72,7 +72,7 @@ describe("AuthStorage credential login policy", () => {
 
 	it("appends OAuth credentials while retaining the selected profile identity", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
-		await authStorage.set(PROVIDER_ID, [
+		await authStorage.credentials.set(PROVIDER_ID, [
 			{ type: "oauth", ...oauthFields("first") },
 			{ type: "oauth", ...oauthFields("second") },
 		]);
@@ -82,7 +82,7 @@ describe("AuthStorage credential login policy", () => {
 			orgName: "Selected profile",
 		};
 
-		const identity = await authStorage.login(PROVIDER_ID, {
+		const identity = await authStorage.oauth.login(PROVIDER_ID, {
 			onAuth: () => {},
 			onPrompt: async () => "",
 		});
@@ -127,7 +127,7 @@ describe("AuthStorage credential login policy", () => {
 
 		const controller = new AbortController();
 		const fetchImpl = async () => new Response("{}", { status: 200 });
-		const identity = await authStorage.login(PROVIDER_ID, {
+		const identity = await authStorage.oauth.login(PROVIDER_ID, {
 			onAuth: (_info: OAuthAuthInfo) => {},
 			onProgress: (message: string) => progress.push(message),
 			onPrompt: async (_prompt: OAuthPrompt) => "one",
@@ -145,7 +145,7 @@ describe("AuthStorage credential login policy", () => {
 
 	it("redacts refresh tokens from generic remote snapshots while keeping Kiro client binding", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
-		await authStorage.set("kiro", {
+		await authStorage.credentials.set("kiro", {
 			type: "oauth",
 			access: "access-token",
 			refresh: "real-refresh-token",
@@ -156,7 +156,7 @@ describe("AuthStorage credential login policy", () => {
 			kiroOidcRegion: "us-east-1",
 		});
 
-		const snapshot = authStorage.exportSnapshot();
+		const snapshot = authStorage.credentials.snapshot();
 		const credential = snapshot.credentials.find(entry => entry.provider === "kiro")?.credential;
 		expect(credential).toMatchObject({ refresh: "__remote__" });
 		expect(credential).not.toHaveProperty("refresh", "real-refresh-token");
@@ -178,9 +178,9 @@ describe("AuthStorage credential login policy", () => {
 			sourceId: SOURCE_ID,
 			login: async () => "new-key",
 		});
-		await authStorage.set(PROVIDER_ID, { type: "api_key", key: "old-key" });
+		await authStorage.credentials.set(PROVIDER_ID, { type: "api_key", key: "old-key" });
 
-		await authStorage.login(PROVIDER_ID, {
+		await authStorage.oauth.login(PROVIDER_ID, {
 			onAuth: () => {},
 			onPrompt: async () => "",
 		});

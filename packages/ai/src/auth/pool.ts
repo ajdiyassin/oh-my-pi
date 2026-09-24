@@ -27,6 +27,17 @@ const MAX_PENDING_DISABLED_EVENTS = 32;
 function fingerprintOAuthBearer(bearer: string): string {
 	return Bun.SHA256.hash(bearer, "base64url");
 }
+/**
+ * Strip broker-invisible secrets from a credential before it crosses the wire.
+ * OAuth refresh tokens become the sentinel; the Kiro OIDC client secret is a
+ * refresh-capable secret too, so it is dropped while the non-secret client
+ * binding (client id, token endpoint, region) survives for routing.
+ */
+function redactCredentialForWire(credential: AuthCredential): SnapshotCredential {
+	if (credential.type === "api_key") return credential;
+	const { kiroClientSecret: _kiroClientSecret, ...withoutSecrets } = credential;
+	return { ...withoutSecrets, refresh: REMOTE_REFRESH_SENTINEL };
+}
 
 /** One stored credential row as cached in memory. */
 export type StoredCredential = { id: number; credential: AuthCredential };
@@ -52,7 +63,9 @@ export function credentialDisabledEvent(
 export function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
 	if (left.type !== right.type) return false;
 	if (left.type === "api_key") {
-		return right.type === "api_key" && left.key === right.key;
+		// Kiro resolves a runtime endpoint per login; the same key bytes against a
+		// different endpoint are a different credential.
+		return right.type === "api_key" && left.key === right.key && left.apiEndpoint === right.apiEndpoint;
 	}
 	if (right.type !== "oauth") return false;
 	return (
@@ -706,8 +719,7 @@ export class CredentialPool implements CredentialsApi {
 		for (const [provider, stored] of this.#data) {
 			for (const entry of stored) {
 				const credential = entry.credential;
-				const redacted: SnapshotCredential =
-					credential.type === "api_key" ? credential : { ...credential, refresh: REMOTE_REFRESH_SENTINEL };
+				const redacted = redactCredentialForWire(credential);
 				entries.push({
 					id: entry.id,
 					provider,
@@ -782,8 +794,7 @@ export class CredentialPool implements CredentialsApi {
 		this.reset(provider);
 		return stored.map(entry => {
 			const persisted = entry.credential;
-			const redacted: SnapshotCredential =
-				persisted.type === "api_key" ? persisted : { ...persisted, refresh: REMOTE_REFRESH_SENTINEL };
+			const redacted = redactCredentialForWire(persisted);
 			return {
 				id: entry.id,
 				provider: entry.provider,

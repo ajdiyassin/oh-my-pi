@@ -8,6 +8,8 @@ interface RenderableBlock {
 	render(width: number): string[];
 }
 
+const PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/two";
+
 function renderPresented(blocks: unknown[]): string {
 	return blocks
 		.flatMap(block => {
@@ -17,35 +19,43 @@ function renderPresented(blocks: unknown[]): string {
 		.join("\n");
 }
 
+async function loginKiro(orgName: string | undefined): Promise<string> {
+	const presentedBlocks: unknown[] = [];
+	const authStorage = {
+		oauth: {
+			login: vi.fn(async () => ({ type: "oauth", orgId: PROFILE_ARN, orgName })),
+		},
+	} as unknown as AuthStorage;
+	const ctx = {
+		oauthManualInput: { waitForInput: vi.fn(), clear: vi.fn() },
+		session: { modelRegistry: { authStorage, refreshProvider: vi.fn(async () => {}) } },
+		editorContainer: { clear: vi.fn(), addChild: vi.fn(), children: [] },
+		editor: {},
+		ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+		showStatus: vi.fn(),
+		showError: vi.fn(),
+		present: vi.fn((block: unknown) => {
+			presentedBlocks.push(block);
+		}),
+		openInBrowser: vi.fn(),
+	} as unknown as InteractiveModeContext;
+	const controller = new SelectorController(ctx);
+
+	await controller.showOAuthSelector("login", "kiro");
+	return renderPresented(presentedBlocks);
+}
+
 beforeAll(async () => {
 	await initTheme();
 });
 
 describe("SelectorController Kiro login", () => {
-	it("skips refresh and success when login stores no credential (deferred route)", async () => {
-		const presentedBlocks: unknown[] = [];
-		const authStorage = {
-			login: vi.fn(async () => undefined),
-		} as unknown as AuthStorage;
-		const refreshProvider = vi.fn(async () => {});
-		const ctx = {
-			oauthManualInput: { waitForInput: vi.fn(), clear: vi.fn() },
-			session: { modelRegistry: { authStorage, refreshProvider } },
-			editorContainer: { clear: vi.fn(), addChild: vi.fn(), children: [] },
-			editor: {},
-			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
-			showStatus: vi.fn(),
-			showError: vi.fn(),
-			present: vi.fn((block: unknown) => {
-				presentedBlocks.push(block);
-			}),
-			openInBrowser: vi.fn(),
-		} as unknown as InteractiveModeContext;
-		const controller = new SelectorController(ctx);
+	it("names the selected AWS profile without echoing its ARN or account id", async () => {
+		const output = await loginKiro("Work");
 
-		await controller.showOAuthSelector("login", "kiro");
-		expect(refreshProvider).not.toHaveBeenCalled();
-		expect(renderPresented(presentedBlocks)).not.toContain("Successfully logged in");
-		expect(ctx.showError).not.toHaveBeenCalled();
+		expect(output).toContain("Successfully logged in to kiro");
+		expect(output).toContain("Work");
+		expect(output).not.toContain("arn:");
+		expect(output).not.toContain("123456789012");
 	});
 });

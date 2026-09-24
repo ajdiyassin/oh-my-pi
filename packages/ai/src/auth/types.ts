@@ -29,6 +29,8 @@ export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
 	source?: "login";
+	/** Resolved runtime endpoint persisted alongside a login-stored key (e.g. Kiro). */
+	apiEndpoint?: string;
 };
 
 /** Stored OAuth token and provider account identity. */

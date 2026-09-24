@@ -17,6 +17,7 @@ import {
 } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 import {
+	extractKiroProfileSegment,
 	KIRO_BOOTSTRAP_REGIONS,
 	kiroRuntimeBaseUrl,
 	parseKiroProfileArn,
@@ -660,7 +661,10 @@ export async function loginKiroDevice(ctrl: OAuthController, config: KiroDeviceC
 		...completed,
 		apiEndpoint: kiroRuntimeBaseUrl(parsedProfile.apiRegion),
 		orgId: selected.profileArn,
-		orgName: selected.profileName,
+		// `orgName` is the account label every login surface renders. The raw ARN
+		// embeds the AWS account id, so fall back to its trailing segment instead
+		// of exposing it when a profile carries no display name.
+		orgName: selected.profileName ?? extractKiroProfileSegment(selected.profileArn),
 		kiroClientId: client.clientId,
 		kiroClientSecret: client.clientSecret,
 		kiroClientSecretExpiresAt: client.clientSecretExpiresAt,

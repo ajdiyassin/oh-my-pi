@@ -477,7 +477,7 @@ describe("Kiro authentication", () => {
 			...profileResponses(),
 		];
 		try {
-			const identity = await authStorage.login("kiro", {
+			const identity = await authStorage.oauth.login("kiro", {
 				onAuth: () => {},
 				onPrompt: async (prompt: OAuthPrompt) => {
 					if (prompt.message.includes("Select Kiro login method")) return "1";
@@ -498,6 +498,38 @@ describe("Kiro authentication", () => {
 			});
 		} finally {
 			authStorage.close();
+		}
+	});
+
+	it("labels the login with a profile name or ARN-safe segment, never the raw ARN", async () => {
+		for (const profile of [{ arn: PROFILE_TWO, profileName: "Work" }, { arn: PROFILE_TWO }]) {
+			const store = await SqliteAuthCredentialStore.open(":memory:");
+			const authStorage = new AuthStorage(store);
+			const responses: Response[] = [
+				json(registeredClient("us-east-1", undefined, false)),
+				json(deviceAuthorization()),
+				json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 }),
+				json({ profiles: [profile] }),
+				json({ profiles: [] }),
+			];
+			try {
+				const identity = await authStorage.oauth.login("kiro", {
+					onAuth: () => {},
+					onPrompt: async (prompt: OAuthPrompt) => {
+						if (prompt.message.includes("Select Kiro login method")) return "1";
+						return prompt.message === "Enter Start URL" ? "https://example.awsapps.com/start" : "us-east-1";
+					},
+					fetch: async () => responses.shift() ?? json({}, 500),
+				});
+
+				// Consumers render `orgName` as the account label; the raw ARN embeds
+				// the AWS account id and must never reach that surface.
+				expect(identity?.orgName).not.toBe(PROFILE_TWO);
+				expect(identity?.orgName).not.toContain("123456789012");
+				expect(identity?.orgId).toBe(PROFILE_TWO);
+			} finally {
+				authStorage.close();
+			}
 		}
 	});
 

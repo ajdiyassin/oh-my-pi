@@ -73,7 +73,7 @@ describe("ModelRegistry Kiro cache isolation", () => {
 		});
 		writeModelCache("kiro", Date.now(), [bareModel as Model], true, "", cacheDbPath);
 
-		authStorage.setRuntimeApiKey("kiro", credentialA);
+		authStorage.keys.setRuntime("kiro", credentialA);
 		const offlineFetch: FetchImpl = async input => {
 			throw new Error(`Kiro offline restore unexpectedly fetched ${String(input)}`);
 		};
@@ -84,7 +84,7 @@ describe("ModelRegistry Kiro cache isolation", () => {
 		expect(profileARegistry.find("kiro", bareModelId)).toBeUndefined();
 		expect(discoveryCalls).toBe(1);
 
-		authStorage.setRuntimeApiKey("kiro", credentialB);
+		authStorage.keys.setRuntime("kiro", credentialB);
 		const profileBRegistry = new ModelRegistry(authStorage, modelsPath, { fetch: offlineFetch });
 		await profileBRegistry.refreshProvider("kiro", "offline");
 
@@ -125,13 +125,13 @@ describe("ModelRegistry Kiro cache isolation", () => {
 		expect(seeded.models.map(model => model.id)).toEqual([discoveredModelId]);
 		expect(discoveryCalls).toBe(1);
 
-		await authStorage.set("kiro", {
+		await authStorage.credentials.set("kiro", {
 			type: "api_key",
 			key: "kiro-api-key",
 			apiEndpoint: endpointA,
 			source: "login",
 		});
-		expect(await authStorage.peekApiKey("kiro")).toBe(credentialA);
+		expect(await authStorage.keys.peek("kiro")).toBe(credentialA);
 
 		let offlineCalls = 0;
 		const offlineFetch: FetchImpl = async input => {
@@ -143,7 +143,7 @@ describe("ModelRegistry Kiro cache isolation", () => {
 		expect(endpointARegistry.find("kiro", discoveredModelId)?.name).toBe("API key model");
 		expect(offlineCalls).toBe(0);
 
-		await authStorage.set("kiro", {
+		await authStorage.credentials.set("kiro", {
 			type: "api_key",
 			key: "kiro-api-key",
 			apiEndpoint: endpointB,
