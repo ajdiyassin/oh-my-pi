@@ -62,6 +62,30 @@ function gptReasoningSchema(legacyMode = false): Record<string, unknown> {
 	};
 }
 
+function anthropicThinkingSchema(thinkingTypes: readonly string[]): Record<string, unknown> {
+	return {
+		type: "object",
+		additionalProperties: false,
+		properties: {
+			thinking: {
+				type: "object",
+				properties: {
+					type: { type: "string", enum: [...thinkingTypes] },
+					display: { type: "string", enum: ["summarized", "omitted"] },
+				},
+				required: ["type"],
+			},
+			output_config: {
+				type: "object",
+				properties: {
+					effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
+				},
+			},
+			max_tokens: { type: "integer", minimum: 1024, maximum: 128_000 },
+		},
+	};
+}
+
 function fallbackSpec(): ModelSpec<"kiro-api"> {
 	return {
 		id: "bundled-fallback",
@@ -221,6 +245,35 @@ describe("Kiro provider discovery", () => {
 		expect(models?.map(model => model.thinking?.defaultLevel)).toEqual(modelIds.map(() => Effort.High));
 		expect(models?.every(model => model.thinking?.mode === "effort")).toBe(true);
 		expect(models?.every(model => model.thinking?.effortMap?.[Effort.Minimal] === "none")).toBe(true);
+	});
+
+	test("accepts an Anthropic thinking enum that advertises adaptive without disabled", async () => {
+		// Kiro advertises `["adaptive"]` alone on models whose thinking cannot be
+		// turned off. Requiring both values dropped the whole catalog, which left
+		// the provider absent from the model list rather than just one model.
+		const payload = catalogResponse(["claude-opus-5.5"]);
+		const model = (payload.models as Array<Record<string, unknown>>)[0]!;
+		model.additionalModelRequestFieldsSchema = anthropicThinkingSchema(["adaptive"]);
+		const options = kiroModelManagerOptions({
+			apiKey: JSON.stringify({ token: "adaptive-only-token", apiEndpoint: API_ENDPOINT }),
+			fetch: jsonFetch(payload),
+		});
+
+		const models = await options.fetchDynamicModels?.();
+		expect(models?.map(model => model.id)).toEqual(["claude-opus-5.5"]);
+		expect(models?.[0]?.thinking).toMatchObject({ mode: "anthropic-adaptive", defaultLevel: Effort.Medium });
+	});
+
+	test("still rejects an Anthropic thinking enum without adaptive", async () => {
+		const payload = catalogResponse(["claude-nope"]);
+		const model = (payload.models as Array<Record<string, unknown>>)[0]!;
+		model.additionalModelRequestFieldsSchema = anthropicThinkingSchema(["disabled"]);
+		const options = kiroModelManagerOptions({
+			apiKey: JSON.stringify({ token: "disabled-only-token", apiEndpoint: API_ENDPOINT }),
+			fetch: jsonFetch(payload),
+		});
+
+		expect(await options.fetchDynamicModels?.()).toBeNull();
 	});
 
 	test("accepts legacy GPT mode+effort reasoning schemas", async () => {

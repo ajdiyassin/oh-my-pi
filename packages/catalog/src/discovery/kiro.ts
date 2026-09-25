@@ -353,8 +353,14 @@ function anthropicThinking(model: SanitizedKiroModel): { thinking: ThinkingConfi
 	const thinking = exactPropertyNames(modelId, root.thinking, ["type", "display"], "anthropic.thinking");
 	exactSchemaKeywords(modelId, thinking.type, ["type", "enum"], "anthropic.type");
 	exactSchemaKeywords(modelId, thinking.display, ["type", "enum"], "anthropic.display");
+	// Kiro advertises the thinking modes a model actually supports: a model whose
+	// thinking cannot be turned off publishes `["adaptive"]` alone. `adaptive` is
+	// the mode this mapping emits, so it is the only requirement — also requiring
+	// `disabled` dropped the entire catalog once Kiro began advertising
+	// adaptive-only models, hiding the provider from the model list instead of
+	// degrading a single model.
 	const thinkingTypes = stringEnum(modelId, thinking.type, new Set(["adaptive", "disabled"]), "anthropic.type");
-	if (!thinkingTypes.includes("adaptive") || !thinkingTypes.includes("disabled")) {
+	if (!thinkingTypes.includes("adaptive")) {
 		schemaError(modelId, "anthropic.type");
 	}
 	const display = stringEnum(modelId, thinking.display, new Set(["summarized", "omitted"]), "anthropic.display");
