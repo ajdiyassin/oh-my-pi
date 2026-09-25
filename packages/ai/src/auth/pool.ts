@@ -1,3 +1,4 @@
+import { extractKiroProfileSegment } from "@oh-my-pi/pi-catalog/wire/kiro";
 import { logger } from "@oh-my-pi/pi-utils";
 import { resolveCredentialIdentityKey, serializeCredential } from "./sqlite-credential-store";
 import type { BlockStoreHealth } from "./blocks";
@@ -46,7 +47,17 @@ export function redactCredentialForWire(credential: AuthCredential): SnapshotCre
 /** One stored credential row as cached in memory. */
 export type StoredCredential = { id: number; credential: AuthCredential };
 
-/** {@link CredentialDisabledEvent} for a torn-down row, carrying the account identity it was signed in as. */
+/**
+ * {@link CredentialDisabledEvent} for a torn-down row, carrying the account identity it was signed in as.
+ *
+ * Kiro stores its profile ARN in `orgId`, and that ARN embeds the AWS account
+ * id. Events are logged to disk and replayed to hosts, so the ARN is reduced
+ * to its trailing segment. A row whose `orgId` is not a parseable Kiro profile
+ * ARN yields no `orgId` at all rather than the raw value: `orgName` still
+ * names the row, and a malformed ARN is exactly the case that must not be
+ * echoed. Only the interactive device flow validates the ARN, so unvalidated
+ * rows (API-key logins, `credentials.set`, older writes) reach here too.
+ */
 export function credentialDisabledEvent(
 	provider: string,
 	row: StoredCredential,
@@ -57,7 +68,13 @@ export function credentialDisabledEvent(
 	if (credential.type === "oauth") {
 		if (credential.email) event.email = credential.email;
 		if (credential.accountId) event.accountId = credential.accountId;
-		if (credential.orgId) event.orgId = credential.orgId;
+		if (credential.orgId) {
+			if (provider !== "kiro") event.orgId = credential.orgId;
+			else {
+				const segment = extractKiroProfileSegment(credential.orgId);
+				if (segment) event.orgId = segment;
+			}
+		}
 		if (credential.orgName) event.orgName = credential.orgName;
 	}
 	return event;

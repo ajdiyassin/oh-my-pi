@@ -600,6 +600,46 @@ describe("Kiro authentication", () => {
 		}
 	});
 
+	it("keeps the raw profile ARN out of a credential-disabled event", async () => {
+		// A parseable ARN is reduced to its profile segment; an unparseable one
+		// (API-key logins, `credentials.set`, older rows never validated it) is
+		// dropped rather than echoed, since a malformed ARN is the case that
+		// most needs to stay out of the log.
+		const cases: { orgId: string; expected: string | undefined }[] = [
+			{ orgId: PROFILE_TWO, expected: "two" },
+			{ orgId: "arn:aws:sso:us-east-1:123456789012:profile/two", expected: undefined },
+		];
+		for (const { orgId, expected } of cases) {
+			const store = await SqliteAuthCredentialStore.open(":memory:");
+			const authStorage = new AuthStorage(store);
+			try {
+				await authStorage.credentials.set("kiro", {
+					type: "oauth",
+					access: "access-token",
+					refresh: "refresh-token",
+					expires: Date.now() + 60_000,
+					orgId,
+					orgName: "Work",
+				});
+				const events: { orgId?: string; orgName?: string }[] = [];
+				authStorage.credentials.onDisabled(event => {
+					events.push(event);
+				});
+				const id = store.listAuthCredentials("kiro")[0]?.id;
+				if (id === undefined) throw new Error("expected a stored kiro credential");
+
+				await authStorage.credentials.disable(id, "test: forced");
+
+				expect(events).toHaveLength(1);
+				expect(events[0]?.orgName).toBe("Work");
+				expect(events[0]?.orgId).toBe(expected);
+				expect(JSON.stringify(events[0])).not.toContain("123456789012");
+			} finally {
+				authStorage.close();
+			}
+		}
+	});
+
 	it("limits registration, device authorization, and polling transport retries to three attempts", async () => {
 		expect(KIRO_AUTH_MAX_ATTEMPTS).toBe(3);
 		const run = async (failureTarget: "registration" | "device" | "poll"): Promise<void> => {
