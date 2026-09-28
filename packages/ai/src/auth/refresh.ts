@@ -677,12 +677,19 @@ export class OAuthRefresher {
 	}
 }
 
-/** Broker-facing snapshot entry for a refreshed row; the real refresh token never leaves the store. */
+/**
+ * Broker-facing snapshot entry for a refreshed row; the real refresh token never leaves the store.
+ *
+ * Redaction goes through {@link redactCredentialForWire} rather than overriding
+ * `refresh` here, so this path also drops the Kiro OIDC client secret — a
+ * refresh-capable secret that would otherwise reach broker clients on
+ * `POST /v1/credential/:id/refresh`.
+ */
 function snapshotEntry(id: number, provider: string, credential: OAuthCredential): AuthCredentialSnapshotEntry {
 	return {
 		id,
 		provider,
-		credential: { ...credential, refresh: REMOTE_REFRESH_SENTINEL },
+		credential: redactCredentialForWire(credential),
 		identityKey: resolveCredentialIdentityKey(provider, credential),
 	};
 }

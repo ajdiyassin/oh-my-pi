@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
-1: import type { AuthApiKeyOptions } from "@oh-my-pi/pi-ai/auth-storage";
+import type { AuthApiKeyOptions } from "@oh-my-pi/pi-ai/auth-storage";
 import { assertNotNativeKiroRegistration, registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
