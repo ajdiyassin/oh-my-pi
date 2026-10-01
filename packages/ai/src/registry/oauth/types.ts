@@ -29,6 +29,7 @@ export type OAuthCredentials = {
 	inferenceRegion?: "global" | "eu" | "us";
 	/** WorkOS selected organization; never used as a Factory API organization header. */
 	activeOrganizationId?: string;
+	/**
 	 * Kiro IAM Identity Center device-grant binding. The OIDC client
 	 * registration is per-region and server-issued, so refresh must reuse the
 	 * exact client; these fields persist that binding alongside the grant.
