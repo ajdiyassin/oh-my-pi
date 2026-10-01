@@ -52,7 +52,10 @@
 - Fixed Bedrock Converse requests failing with a "bound to a different conversation" 400 after the system prompt changed under signed thinking: the request is retried once without replayed reasoning ([#14019](https://github.com/can1357/oh-my-pi/pull/14019) by [@nick-maderight](https://github.com/nick-maderight))
 ### Added
 
-- Added Builder ID sign-in to `/login kiro` alongside AWS IAM Identity Center and API-key login. It uses the same OIDC device grant pinned to the Builder portal, asks for no Start URL, region, or profile, and stores a credential without a profile ARN.
+
+### Changed
+
+- Renamed the `/login kiro` sign-in options to `Identity Center`, `Builder ID`, and `API key`. The previous `AWS` label was ambiguous because a Builder ID is also an AWS account. Each option is now also accepted as a typed answer, not only as a number.
 
 ## [18.4.9] - 2026-10-01
 

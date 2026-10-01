@@ -6,6 +6,7 @@ import { getOAuthApiKey } from "@oh-my-pi/pi-ai/registry/oauth";
 import {
 	KIRO_AUTH_MAX_ATTEMPTS,
 	KIRO_IDENTITY_CENTER_SCOPES,
+	KIRO_LOGIN_METHOD_PROMPT,
 	loginKiroDevice,
 	loginKiroHook,
 	refreshKiroHook,
@@ -194,7 +195,7 @@ describe("Kiro authentication", () => {
 		// Only the method picker may prompt: the Start URL, region, and profile
 		// selection are all fixed for Builder ID.
 		expect(prompts).toHaveLength(1);
-		expect(prompts[0]?.message).toBe("Select Kiro login method\n1. AWS\n2. Builder\n3. API");
+		expect(prompts[0]?.message).toBe(KIRO_LOGIN_METHOD_PROMPT);
 		expect(requests[0]).toBe("https://oidc.us-east-1.amazonaws.com/client/register");
 		expect(bodies[1]).toContain('"startUrl":"https://view.awsapps.com/start"');
 
@@ -221,6 +222,39 @@ describe("Kiro authentication", () => {
 				onPrompt: async () => "",
 			}),
 		).rejects.toBeInstanceOf(AIError.OnPromptRequiredError);
+	});
+
+	it("names the sign-in methods by account type and accepts each label", async () => {
+		// "AWS" was ambiguous because Builder ID is also AWS, so the menu names the
+		// account type instead. Each label must be typeable, not just numbered.
+		expect(KIRO_LOGIN_METHOD_PROMPT).toContain("Identity Center");
+		expect(KIRO_LOGIN_METHOD_PROMPT).toContain("Builder ID");
+		expect(KIRO_LOGIN_METHOD_PROMPT).toContain("API key");
+		// AWS may appear in the description, but must not stand alone as a label.
+		expect(KIRO_LOGIN_METHOD_PROMPT).not.toMatch(/^\d+\. AWS$/m);
+
+		// Typing the label must route to the same branch as typing its number:
+		// Builder ID runs the device flow against the Builder portal.
+		const deviceBodies: string[] = [];
+		const responses: Response[] = [
+			json(registeredClient("us-east-1", undefined, false)),
+			json(deviceAuthorization()),
+			json({ accessToken: "builder-access", refreshToken: "builder-refresh", expiresIn: 3600 }),
+		];
+		const credentials = (await loginKiroHook({
+			onAuth: () => {},
+			onPrompt: async (prompt: OAuthPrompt) => {
+				if (prompt.message.includes("Select Kiro login method")) return "builder id";
+				throw new Error(`unexpected prompt: ${prompt.message}`);
+			},
+			fetch: async (input: Request | URL | string, init?: RequestInit) => {
+				if (String(input).endsWith("/device_authorization") && init?.body) deviceBodies.push(String(init.body));
+				return responses.shift() ?? json({}, 500);
+			},
+		})) as OAuthCredentials;
+
+		expect(deviceBodies[0]).toContain('"startUrl":"https://view.awsapps.com/start"');
+		expect(credentials.kiroOidcRegion).toBe("us-east-1");
 	});
 
 	it("routes API selection to the existing API-key validation path", async () => {

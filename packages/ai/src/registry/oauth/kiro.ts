@@ -795,10 +795,22 @@ export async function refreshKiroToken(
 	};
 }
 
+/**
+ * The sign-in methods, named by account type. "AWS" was ambiguous here because
+ * Builder ID is also an AWS account, so the menu says which kind of account each
+ * option signs into. Every label is also accepted as a typed answer.
+ */
+export const KIRO_LOGIN_METHOD_PROMPT = [
+	"Select Kiro login method",
+	"1. Identity Center (your AWS organization)",
+	"2. Builder ID (a personal, free account)",
+	"3. API key (ksk_…)",
+].join("\n");
+
 async function selectKiroLoginMethod(ctrl: OAuthController): Promise<"aws" | "builder" | "api"> {
 	const answer = await requirePrompt(
 		ctrl.onPrompt,
-		{ message: "Select Kiro login method\n1. AWS\n2. Builder\n3. API", placeholder: "1" },
+		{ message: KIRO_LOGIN_METHOD_PROMPT, placeholder: "1" },
 		"Kiro login method",
 	);
 	throwIfCancelled(ctrl.signal);
@@ -806,12 +818,20 @@ async function selectKiroLoginMethod(ctrl: OAuthController): Promise<"aws" | "bu
 		case "":
 			throw new AIError.OnPromptRequiredError("Kiro login method");
 		case "aws":
+		case "idc":
+		case "identity center":
+		case "identity-center":
 		case "1":
 			return "aws";
 		case "builder":
+		case "builder id":
+		case "builder-id":
 		case "2":
 			return "builder";
 		case "api":
+		case "api key":
+		case "api-key":
+		case "apikey":
 		case "3":
 			return "api";
 		default:
@@ -822,7 +842,7 @@ async function selectKiroLoginMethod(ctrl: OAuthController): Promise<"aws" | "bu
 	}
 }
 
-/** `login "custom" hook="kiro-login"`: three-way dispatcher (AWS / Builder / API key). */
+/** `login "custom" hook="kiro-login"`: three-way dispatcher (Identity Center / Builder ID / API key). */
 export async function loginKiroHook(ctrl: OAuthController): Promise<OAuthCredentials | string> {
 	const method = await selectKiroLoginMethod(ctrl);
 	if (method === "aws") {

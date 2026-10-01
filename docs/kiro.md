@@ -7,14 +7,14 @@ For general credential precedence and provider configuration, see [Providers](./
 ## Quick start
 
 1. Run `/login kiro`.
-2. Choose **AWS** for an IAM Identity Center subscription, **Builder** for a personal Builder ID, or **API** for a `ksk_...` API key.
+2. Choose **Identity Center** for an AWS organization, **Builder ID** for a personal free account, or **API key** for a `ksk_...` key.
 3. After authentication, choose a `kiro/<model-id>` model from the discovered catalog.
 
 Kiro login uses replacement semantics. Logging in again replaces the stored Kiro credential with the newly selected account or key.
 
 ## AWS IAM Identity Center device login
 
-Choose **AWS** in the Kiro login method selector. OMP asks for:
+Choose **Identity Center** in the Kiro login method selector. OMP asks for:
 
 - **Start URL** — the AWS access portal URL, for example `https://company.awsapps.com/start`.
 - **OIDC region** — the AWS IAM Identity Center/OIDC region for that portal.
@@ -56,7 +56,7 @@ Kiro defaults to `auto` when no explicit model is selected; online discovery rep
 
 Because a Builder ID has no organization, the stored credential carries no profile ARN and the service infers the profile from the bearer token. The runtime region comes from the login region. Model discovery and the model cache behave the same as for AWS: the cache is scoped to the endpoint, and switching accounts requires logging in again.
 
-Choose AWS when you sign in through an IAM Identity Center Start URL, and API when you have a `ksk_…` key.
+Choose **Identity Center** when you sign in through an IAM Identity Center Start URL, and **API key** when you have a `ksk_…` key.
 
 ## Logout and re-login
 
