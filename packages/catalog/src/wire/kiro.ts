@@ -3,6 +3,12 @@
  * SSRF-safe management/runtime URL construction. No credentials here.
  */
 
+/**
+ * Kiro API keys are always `ksk_…`, so the token shape distinguishes an API key
+ * from an OAuth bearer. The credential projection carries no other marker.
+ */
+export const KIRO_API_KEY_PREFIX = "ksk_";
+
 /** Bootstrap-only management probes — not an availability allowlist. */
 export const KIRO_BOOTSTRAP_REGIONS = ["us-east-1", "eu-central-1"] as const;
 

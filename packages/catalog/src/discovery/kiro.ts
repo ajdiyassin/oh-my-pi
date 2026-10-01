@@ -38,7 +38,9 @@ const PROTOTYPE_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype
 
 export type KiroDiscoveryCredential =
 	| { type: "api_key"; token: string; apiEndpoint?: string }
-	| { type: "oauth"; token: string; profileArn: string };
+	// Builder ID signs in without an organization, so an OAuth bearer may carry no
+	// profile ARN; the runtime region then comes from `apiEndpoint`.
+	| { type: "oauth"; token: string; profileArn?: string; apiEndpoint?: string };
 
 export interface KiroDiscoveryRoute {
 	apiRegion: string;
@@ -597,9 +599,17 @@ function routeForApiRegion(apiRegion: string, profileArn?: string): KiroDiscover
  */
 export function resolveKiroDiscoveryRoute(credential: KiroDiscoveryCredential): KiroDiscoveryRoute | null {
 	if (credential.type === "oauth") {
-		const parsed = parseKiroProfileArn(credential.profileArn);
-		if (!parsed) return null;
-		return routeForApiRegion(parsed.apiRegion, parsed.profileArn);
+		if (credential.profileArn !== undefined) {
+			const parsed = parseKiroProfileArn(credential.profileArn);
+			if (!parsed) return null;
+			return routeForApiRegion(parsed.apiRegion, parsed.profileArn);
+		}
+		// Builder ID: no profile ARN, so the endpoint carries the region. The
+		// service infers the profile from the bearer, matching the Kiro CLI.
+		if (!credential.apiEndpoint) return null;
+		const builderEndpoint = parseKiroEndpoint(credential.apiEndpoint);
+		if (!builderEndpoint) return null;
+		return routeForApiRegion(builderEndpoint.apiRegion);
 	}
 
 	if (!credential.apiEndpoint) return null;

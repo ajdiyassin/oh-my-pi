@@ -8,6 +8,7 @@ import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import {
 	DEFAULT_MODEL_PER_PROVIDER,
 	PROVIDER_DESCRIPTORS,
+	parseKiroDiscoveryCredential,
 	resolveKiroModelCacheProviderId,
 	resolveModelCacheProviderId,
 } from "@oh-my-pi/pi-catalog/provider-models";
@@ -378,6 +379,44 @@ describe("Kiro provider discovery", () => {
 		expect(resolveModelCacheProviderId("kiro")).toBe("kiro");
 		expect(resolveKiroModelCacheProviderId(oauthProfileA)).not.toContain(PROFILE_ARN);
 		expect(resolveKiroModelCacheProviderId(oauthProfileA)).not.toContain("rotated-access-a");
+	});
+
+	test("treats a profile-less OAuth bearer as OAuth, not as an API key", async () => {
+		// Builder ID signs in without an organization, so the credential carries no
+		// profileArn and `ksk_…` is the only thing that separates the two kinds.
+		// The classification decides the cache identity: an `api_key` identity embeds
+		// the raw token, so it would churn on every access-token refresh.
+		const builderCredential = JSON.stringify({ token: "builder-bearer-token", apiEndpoint: API_ENDPOINT });
+
+		expect(parseKiroDiscoveryCredential(builderCredential)).toEqual({
+			type: "oauth",
+			token: "builder-bearer-token",
+			apiEndpoint: API_ENDPOINT,
+		});
+		expect(parseKiroDiscoveryCredential(JSON.stringify({ token: "ksk_key", apiEndpoint: API_ENDPOINT }))).toEqual({
+			type: "api_key",
+			token: "ksk_key",
+			apiEndpoint: API_ENDPOINT,
+		});
+
+		// Discovery must still route and populate models without a profile ARN.
+		const payload = catalogResponse(["claude-sonnet-4-5"]);
+		const options = kiroModelManagerOptions({ apiKey: builderCredential, fetch: jsonFetch(payload) });
+		const models = await options.fetchDynamicModels?.();
+		expect(models?.map(model => model.id)).toEqual(["claude-sonnet-4-5"]);
+	});
+
+	test("keeps a profile-less OAuth cache namespace stable across token rotation", () => {
+		const builderA = JSON.stringify({ token: "builder-a", apiEndpoint: API_ENDPOINT });
+		const builderARotated = JSON.stringify({ token: "builder-a-rotated", apiEndpoint: API_ENDPOINT });
+		const builderB = JSON.stringify({
+			token: "builder-a",
+			apiEndpoint: "https://management.eu-west-1.kiro.dev/",
+		});
+
+		expect(resolveKiroModelCacheProviderId(builderA)).toBe(resolveKiroModelCacheProviderId(builderARotated));
+		expect(resolveKiroModelCacheProviderId(builderA)).not.toBe(resolveKiroModelCacheProviderId(builderB));
+		expect(resolveKiroModelCacheProviderId(builderA)).not.toContain("builder-a");
 	});
 
 	test("prunes static fallback models after a successful live catalog refresh", async () => {

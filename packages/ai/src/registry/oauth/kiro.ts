@@ -2,11 +2,12 @@
  * Kiro auth flows behind `login "custom" hook="kiro-login"` /
  * `refresh hook="kiro-refresh"` (`rules/auth/kiro.kdl`).
  *
- * Three login methods: AWS IAM Identity Center device flow, a Builder-ID stub,
- * and `ksk_…` API-key validation against the management route. Reached through
- * the lazy hook tables so the OIDC/device polling graph stays out of eager
- * startup. Uses only `OAuthController` surface (`onPrompt` numbered lists —
- * there is no `onSelect` or login cache in the declarative registry).
+ * Three login methods: AWS IAM Identity Center device flow, Builder ID device
+ * flow (no organization, so no profile is selected), and `ksk_…` API-key
+ * validation against the management route. Reached through the lazy hook tables
+ * so the OIDC/device polling graph stays out of eager startup. Uses only
+ * `OAuthController` surface (`onPrompt` numbered lists — there is no `onSelect`
+ * or login cache in the declarative registry).
  */
 import type { KiroApiKeyBootstrapResult, KiroProfileSummary } from "@oh-my-pi/pi-catalog/discovery/kiro";
 import {
@@ -18,9 +19,11 @@ import {
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 import {
 	extractKiroProfileSegment,
+	KIRO_API_KEY_PREFIX,
 	KIRO_BOOTSTRAP_REGIONS,
 	kiroRuntimeBaseUrl,
 	parseKiroProfileArn,
+	resolveKiroApiRegion,
 	validateKiroApiRegion,
 } from "@oh-my-pi/pi-catalog/wire/kiro";
 import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
@@ -44,6 +47,15 @@ export const KIRO_IDENTITY_CENTER_SCOPES = [
 	"codewhisperer:conversations",
 ] as const;
 
+/**
+ * Builder ID is the free-tier sign-in. It uses the same OIDC device grant as IAM
+ * Identity Center, pinned to the public Builder portal and us-east-1, and carries
+ * no organization — so no Start URL, region, or profile is selected and the
+ * service infers the profile from the bearer.
+ */
+export const KIRO_BUILDER_ID_START_URL = "https://view.awsapps.com/start";
+export const KIRO_BUILDER_ID_REGION = "us-east-1";
+
 export interface KiroRequestOptions {
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
@@ -58,6 +70,11 @@ export interface KiroProfileSelectionOptions extends KiroRequestOptions {
 export interface KiroDeviceConfig {
 	region?: string;
 	startUrl?: string;
+	/**
+	 * Builder ID has no organization to select a profile from. The runtime region
+	 * is then taken from the login region instead of a profile ARN.
+	 */
+	skipProfileSelection?: boolean;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -214,7 +231,7 @@ function normalizeApiKey(input: string): string {
 		(first === '"' || first === "'" || first === "`") && withoutControls.at(-1) === first
 			? withoutControls.slice(1, -1).trim()
 			: withoutControls;
-	if (!/^ksk_[A-Za-z0-9._~+/-]+$/.test(token)) {
+	if (!new RegExp(`^${KIRO_API_KEY_PREFIX}[A-Za-z0-9._~+/-]+$`).test(token)) {
 		throw new AIError.OAuthError("Kiro API keys must use the ksk_… format", {
 			kind: "validation",
 			provider: PROVIDER,
@@ -647,6 +664,27 @@ export async function loginKiroDevice(ctrl: OAuthController, config: KiroDeviceC
 		signal: ctrl.signal,
 	});
 	throwIfCancelled(ctrl.signal);
+	// Both sign-in shapes persist the same OIDC registration state; only the
+	// profile-derived fields differ.
+	const registration = {
+		kiroClientId: client.clientId,
+		kiroClientSecret: client.clientSecret,
+		kiroClientSecretExpiresAt: client.clientSecretExpiresAt,
+		kiroTokenEndpoint: client.tokenEndpoint,
+		kiroOidcRegion: region,
+	};
+
+	// Builder ID signs in without an organization, so there is no profile to pick
+	// and the service infers it from the bearer. Everything else about the device
+	// grant is identical to IAM Identity Center.
+	if (config.skipProfileSelection) {
+		return {
+			...completed,
+			...registration,
+			apiEndpoint: kiroRuntimeBaseUrl(resolveKiroApiRegion(region)),
+		};
+	}
+
 	const selected = await selectKiroProfileFromBootstrapRegions(completed.access, {
 		fetch: ctrl.fetch,
 		signal: ctrl.signal,
@@ -659,17 +697,13 @@ export async function loginKiroDevice(ctrl: OAuthController, config: KiroDeviceC
 	}
 	return {
 		...completed,
+		...registration,
 		apiEndpoint: kiroRuntimeBaseUrl(parsedProfile.apiRegion),
 		orgId: selected.profileArn,
 		// `orgName` is the account label every login surface renders. The raw ARN
 		// embeds the AWS account id, so fall back to its trailing segment instead
 		// of exposing it when a profile carries no display name.
 		orgName: selected.profileName ?? extractKiroProfileSegment(selected.profileArn),
-		kiroClientId: client.clientId,
-		kiroClientSecret: client.clientSecret,
-		kiroClientSecretExpiresAt: client.clientSecretExpiresAt,
-		kiroTokenEndpoint: client.tokenEndpoint,
-		kiroOidcRegion: region,
 	};
 }
 
@@ -797,8 +831,14 @@ export async function loginKiroHook(ctrl: OAuthController): Promise<OAuthCredent
 		return result;
 	}
 	if (method === "builder") {
-		ctrl.onProgress?.("Builder ID login is not available yet.");
-		return "";
+		// Same device grant as AWS, pinned to the Builder portal and us-east-1.
+		const result = await loginKiroDevice(ctrl, {
+			startUrl: KIRO_BUILDER_ID_START_URL,
+			region: KIRO_BUILDER_ID_REGION,
+			skipProfileSelection: true,
+		});
+		throwIfCancelled(ctrl.signal);
+		return result;
 	}
 	const apiKey = await requirePrompt(
 		ctrl.onPrompt,

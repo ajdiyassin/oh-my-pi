@@ -7,10 +7,10 @@ For general credential precedence and provider configuration, see [Providers](./
 ## Quick start
 
 1. Run `/login kiro`.
-2. Choose **AWS** for an IAM Identity Center subscription or **API** for a `ksk_...` API key.
+2. Choose **AWS** for an IAM Identity Center subscription, **Builder** for a personal Builder ID, or **API** for a `ksk_...` API key.
 3. After authentication, choose a `kiro/<model-id>` model from the discovered catalog.
 
-Kiro login uses replacement semantics. Logging in again replaces the stored Kiro credential with the newly selected AWS profile or API key.
+Kiro login uses replacement semantics. Logging in again replaces the stored Kiro credential with the newly selected account or key.
 
 ## AWS IAM Identity Center device login
 
@@ -50,9 +50,13 @@ Model discovery is credential-scoped:
 
 Kiro defaults to `auto` when no explicit model is selected; online discovery replaces the catalog with the account's live models. A cache entry for one profile, API key, or endpoint is not reused for another. If models disappear after switching accounts, log in again and allow discovery to complete.
 
-## Builder
+## Builder ID
 
-The **Builder** option is shown as an explicit placeholder for a future Builder ID flow. It reports that Builder ID login is not available, stores no credential, and does not report a successful login. Choose AWS or API instead.
+**Builder** signs in with a personal AWS Builder ID instead of an IAM Identity Center organization. It runs the same OIDC device grant, pinned to the public Builder portal (`https://view.awsapps.com/start`) and `us-east-1`, so it asks for no Start URL, region, or profile.
+
+Because a Builder ID has no organization, the stored credential carries no profile ARN and the service infers the profile from the bearer token. The runtime region comes from the login region. Model discovery and the model cache behave the same as for AWS: the cache is scoped to the endpoint, and switching accounts requires logging in again.
+
+Choose AWS when you sign in through an IAM Identity Center Start URL, and API when you have a `ksk_…` key.
 
 ## Logout and re-login
 
@@ -83,6 +87,6 @@ A present registration endpoint must be the HTTPS regional AWS OIDC token endpoi
 
 Confirm that the selected model is under the `kiro` provider, wait for online discovery, and verify that the selected AWS profile or API-key region is correct. Log in again after changing profiles or regions.
 
-### Builder login appears to do nothing
+### Builder login does not start
 
-Builder ID is intentionally deferred. No credential is stored and no model refresh is triggered. Select AWS or API until Builder support is implemented.
+Builder ID requires a browser sign-in at the Builder portal. If the flow never starts, re-run `/login kiro` and confirm the device code page opens, then check whether a network policy blocks `oidc.us-east-1.amazonaws.com`.

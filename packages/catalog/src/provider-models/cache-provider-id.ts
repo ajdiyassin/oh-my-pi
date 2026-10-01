@@ -4,6 +4,7 @@ import { CODEX_BASE_URL, CODEX_CLIENT_VERSION } from "../wire/codex";
 import { CURSOR_DEFAULT_BASE_URL } from "../wire/cursor";
 import { type AccountScope, factoryDroidModelCacheProviderId } from "../wire/factory-droid";
 import { PERSONAL_GITHUB_COPILOT_BASE_URL } from "../wire/github-copilot";
+import { KIRO_API_KEY_PREFIX } from "../wire/kiro";
 import {
 	SINGULARITYAPI_DEV_API_BASE_URL,
 	SINGULARITYAPI_TECH_API_BASE_URL,
@@ -23,13 +24,25 @@ export function parseKiroDiscoveryCredential(value: string): KiroDiscoveryCreden
 		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
 			const record = parsed as Record<string, unknown>;
 			if (typeof record.token === "string" && record.token.length > 0) {
-				if (typeof record.profileArn === "string" && record.profileArn.length > 0) {
-					return { type: "oauth", token: record.token, profileArn: record.profileArn };
+				const apiEndpoint = typeof record.apiEndpoint === "string" ? record.apiEndpoint : undefined;
+				// Kiro API keys are always `ksk_…` (enforced by `normalizeApiKey` on the
+				// auth side), so the token shape distinguishes an API key from an OAuth
+				// bearer. Builder ID bearers carry no profile ARN, so the presence of a
+				// profile alone cannot decide this.
+				if (!record.token.startsWith(KIRO_API_KEY_PREFIX)) {
+					const profileArn =
+						typeof record.profileArn === "string" && record.profileArn.length > 0 ? record.profileArn : undefined;
+					return {
+						type: "oauth",
+						token: record.token,
+						...(profileArn ? { profileArn } : {}),
+						...(apiEndpoint ? { apiEndpoint } : {}),
+					};
 				}
 				return {
 					type: "api_key",
 					token: record.token,
-					...(typeof record.apiEndpoint === "string" ? { apiEndpoint: record.apiEndpoint } : {}),
+					...(apiEndpoint ? { apiEndpoint } : {}),
 				};
 			}
 		}
@@ -45,7 +58,9 @@ export function resolveKiroModelCacheProviderId(apiKey?: string): string {
 	const credential = parseKiroDiscoveryCredential(apiKey);
 	const identity =
 		credential.type === "oauth"
-			? `oauth\u0000${credential.profileArn}`
+			? // Builder ID has no profile, so its identity is the endpoint; either way the
+				// namespace must survive access-token rotation for the same account.
+				`oauth\u0000${credential.profileArn ?? ""}\u0000${credential.apiEndpoint ?? ""}`
 			: `api_key\u0000${credential.token}\u0000${credential.apiEndpoint ?? ""}`;
 	return `kiro:models-v1:${Bun.hash(identity).toString(36)}`;
 }

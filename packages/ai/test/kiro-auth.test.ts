@@ -160,26 +160,58 @@ describe("Kiro authentication", () => {
 		expect(requests).toContain("https://management.eu-central-1.kiro.dev/");
 	});
 
-	it("returns the Builder stub without a network request for numbered choice 2", async () => {
+	it("signs in with Builder ID without prompting for a Start URL, region, or profile", async () => {
+		// Builder ID is the same device grant as IAM Identity Center, pinned to the
+		// public Builder start URL and us-east-1. It has no organization, so there
+		// is no profile to select and the credential carries no profile ARN.
+		const requests: string[] = [];
+		const bodies: string[] = [];
 		const prompts: OAuthPrompt[] = [];
-		const progress: string[] = [];
+		const responses: Response[] = [
+			json(registeredClient("us-east-1", undefined, false)),
+			json(deviceAuthorization()),
+			json({ accessToken: "builder-access", refreshToken: "builder-refresh", expiresIn: 3600 }),
+		];
+
 		const result = await loginKiroHook({
 			onAuth: () => {},
-			onProgress: (message: string) => progress.push(message),
 			onPrompt: async (prompt: OAuthPrompt) => {
 				prompts.push(prompt);
+				// Builder ID fixes the Start URL, region, and profile, so the method
+				// picker is the only prompt allowed.
+				if (!prompt.message.includes("Select Kiro login method")) {
+					throw new Error(`Builder ID must not prompt: ${prompt.message}`);
+				}
 				return "2";
 			},
-			fetch: async () => {
-				throw new Error("Builder must not make a request");
+			fetch: async (input: Request | URL | string, init?: RequestInit) => {
+				requests.push(String(input));
+				if (init?.body) bodies.push(String(init.body));
+				return responses.shift() ?? json({}, 500);
 			},
 		});
 
-		expect(result).toBe("");
+		// Only the method picker may prompt: the Start URL, region, and profile
+		// selection are all fixed for Builder ID.
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]?.message).toBe("Select Kiro login method\n1. AWS\n2. Builder\n3. API");
-		expect(prompts[0]?.placeholder).toBe("1");
-		expect(progress).toEqual(["Builder ID login is not available yet."]);
+		expect(requests[0]).toBe("https://oidc.us-east-1.amazonaws.com/client/register");
+		expect(bodies[1]).toContain('"startUrl":"https://view.awsapps.com/start"');
+
+		const credentials = result as OAuthCredentials;
+		expect(credentials.access).toBe("builder-access");
+		expect(credentials.kiroOidcRegion).toBe("us-east-1");
+		expect(credentials.apiEndpoint).toBe("https://runtime.us-east-1.kiro.dev/");
+		// The refresh path needs the whole registration state, and Builder ID
+		// stores it without a profile ARN.
+		expect(credentials).toMatchObject({
+			kiroClientId: "client-id",
+			kiroClientSecret: "client-secret",
+			kiroTokenEndpoint: "https://oidc.us-east-1.amazonaws.com/token",
+		});
+		// Registration reports seconds; the credential stores milliseconds.
+		expect(credentials.kiroClientSecretExpiresAt).toBe(4_000_000_000_000);
+		expect(credentials.orgId).toBeUndefined();
 	});
 
 	it("does not silently choose AWS when the login-method answer is empty", async () => {
@@ -537,6 +569,49 @@ describe("Kiro authentication", () => {
 			expect(entry.credential.type).toBe("oauth");
 			expect(entry.credential).not.toHaveProperty("kiroClientSecret");
 			expect(entry.credential).toMatchObject({ kiroClientId: "client-id" });
+		} finally {
+			refreshSpy.mockRestore();
+			authStorage.close();
+		}
+	});
+
+	it("refreshes a Builder ID credential that has no profile ARN", async () => {
+		// Builder ID stores no orgId, so refresh must not depend on parsing a profile
+		// ARN; the region check runs off kiroOidcRegion instead.
+		const store = await SqliteAuthCredentialStore.open(":memory:");
+		const authStorage = new AuthStorage(store);
+		const responses: Response[] = [
+			json(registeredClient("us-east-1", undefined, false)),
+			json(deviceAuthorization()),
+			json({ accessToken: "builder-access", refreshToken: "builder-refresh", expiresIn: 3600 }),
+		];
+		const refreshSpy = spyOn(oauthUtils, "refreshOAuthToken").mockImplementation(
+			async (_provider: string, credential: OAuthCredentials) => ({
+				...credential,
+				access: "builder-access-2",
+				expires: Date.now() + 3_600_000,
+			}),
+		);
+		try {
+			await authStorage.oauth.login("kiro", {
+				onAuth: () => {},
+				onPrompt: async (prompt: OAuthPrompt) => {
+					if (prompt.message.includes("Select Kiro login method")) return "2";
+					throw new Error(`Builder ID must not prompt: ${prompt.message}`);
+				},
+				fetch: async () => responses.shift() ?? json({}, 500),
+			});
+			const id = store.listAuthCredentials("kiro")[0]?.id;
+			if (id === undefined) throw new Error("expected a stored kiro credential");
+
+			const entry = await authStorage.oauth.refresh(id);
+			expect(refreshSpy).toHaveBeenCalled();
+			expect(entry.credential).toMatchObject({
+				access: "builder-access-2",
+				kiroClientId: "client-id",
+				kiroOidcRegion: "us-east-1",
+			});
+			expect((entry.credential as OAuthCredentials).orgId).toBeUndefined();
 		} finally {
 			refreshSpy.mockRestore();
 			authStorage.close();
