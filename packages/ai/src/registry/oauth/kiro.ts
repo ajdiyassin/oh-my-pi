@@ -672,6 +672,10 @@ export async function loginKiroDevice(ctrl: OAuthController, config: KiroDeviceC
 		kiroClientSecretExpiresAt: client.clientSecretExpiresAt,
 		kiroTokenEndpoint: client.tokenEndpoint,
 		kiroOidcRegion: region,
+		// Stable per-login id (survives token refresh) so the model cache can be
+		// scoped to this login. Neither IdC profile ARNs (shared org-wide) nor
+		// Builder ID bearers (no profile) uniquely identify one login.
+		kiroLoginId: crypto.randomUUID(),
 	};
 
 	// Builder ID signs in without an organization, so there is no profile to pick
@@ -792,6 +796,7 @@ export async function refreshKiroToken(
 		kiroClientSecretExpiresAt: current.kiroClientSecretExpiresAt,
 		kiroTokenEndpoint: current.kiroTokenEndpoint,
 		kiroOidcRegion: current.kiroOidcRegion,
+		kiroLoginId: current.kiroLoginId,
 	};
 }
 

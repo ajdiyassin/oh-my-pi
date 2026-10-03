@@ -40,6 +40,12 @@ export type OAuthCredentials = {
 	kiroTokenEndpoint?: string;
 	kiroOidcRegion?: string;
 	/**
+	 * Random id minted at each Kiro device login. Survives token refresh; keys the
+	 * model cache per login so a second account on the same endpoint cannot inherit
+	 * the first account's catalog.
+	 */
+	kiroLoginId?: string;
+	/**
 	 * Epoch ms of the interactive login that minted this grant. Set by
 	 * `AuthStorage.oauth.login`; token refreshes preserve it. Providers with an
 	 * absolute grant lifetime (Anthropic expires the whole refresh-token

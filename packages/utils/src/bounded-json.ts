@@ -13,6 +13,12 @@ export class BoundedJsonReadError extends Error {
 export interface ReadBoundedBytesOptions {
 	/** Keep the prefix instead of failing when the response exceeds maxBytes. */
 	truncate?: boolean;
+	/**
+	 * Cancel the read when this aborts. Error bodies can arrive with a short
+	 * payload on a connection the peer never closes, so a caller with a
+	 * deadline must be able to stop waiting for EOF.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Read response bytes while bounding retained memory. */
@@ -32,9 +38,19 @@ export async function readBoundedBytes(
 
 	const chunks: Uint8Array[] = [];
 	let totalBytes = 0;
+	const signal = options.signal;
+	const aborted = signal ? Promise.withResolvers<never>() : undefined;
+	const onAbort = (): void => {
+		void reader.cancel().catch(() => {});
+		aborted?.reject(signal?.reason);
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
 	try {
 		while (true) {
-			const { done, value } = await reader.read();
+			const read = reader.read();
+			// Without a signal the read is the whole wait; with one, an abort must
+			// win so a stalled peer cannot hold the caller past its deadline.
+			const { done, value } = aborted ? await Promise.race([read, aborted.promise]) : await read;
 			if (done) break;
 			if (value.byteLength === 0) continue;
 			const remaining = maxBytes - totalBytes;
@@ -51,8 +67,14 @@ export async function readBoundedBytes(
 			totalBytes += value.byteLength;
 		}
 	} finally {
+		signal?.removeEventListener("abort", onAbort);
 		reader.releaseLock();
 	}
+
+	// Cancelling the reader resolves the pending read as `done`, so the abort is
+	// only visible on the signal afterwards. Without this the caller could not
+	// tell a stalled peer from a body that genuinely ended.
+	if (signal?.aborted) throw signal.reason;
 
 	const bytes = new Uint8Array(totalBytes);
 	let offset = 0;

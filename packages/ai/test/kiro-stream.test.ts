@@ -365,6 +365,137 @@ describe("Kiro stream transport", () => {
 		expect(result.content).toContainEqual({ type: "text", text: "recovered" });
 	});
 
+	test("retries one pre-output transient tool-format rejection", async () => {
+		// The runtime fleet occasionally answers a fresh remote session's first
+		// request with this 400 and accepts the identical body on replay.
+		const bodies: string[] = [];
+		const invocationIds: string[] = [];
+		let attempts = 0;
+		const fetch: FetchImpl = async (_input, init) => {
+			attempts += 1;
+			bodies.push(String(init?.body));
+			const headers = new Headers(init?.headers);
+			invocationIds.push(headers.get("amz-sdk-invocation-id") ?? "");
+			if (attempts === 1) {
+				return Response.json(
+					{ __type: "ValidationException", message: "Invalid tool use format." },
+					{ status: 400 },
+				);
+			}
+			return responseForEvents([["assistantResponseEvent", { content: "recovered" }]]);
+		};
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", profileArn: TEST_PROFILE }),
+			fetch,
+			providerRetryWait: async () => {},
+		}).result();
+
+		expect(attempts).toBe(2);
+		// The replay must carry the same payload under a fresh request identity.
+		expect(bodies[1]).toBe(bodies[0]);
+		expect(invocationIds[1]).not.toBe(invocationIds[0]);
+		expect(result.stopReason).toBe("stop");
+	});
+
+	test("keeps other validation rejections terminal", async () => {
+		// Only the tool-format wording is transient; a real validation failure
+		// must fail on the first response so the error is not masked by a retry.
+		let attempts = 0;
+		const fetch: FetchImpl = async () => {
+			attempts += 1;
+			return Response.json(
+				{ __type: "ValidationException", message: "Missing required field conversationId." },
+				{ status: 400 },
+			);
+		};
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", profileArn: TEST_PROFILE }),
+			fetch,
+			providerRetryWait: async () => {},
+		}).result();
+
+		expect(attempts).toBe(1);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toMatch(/Missing required field/);
+	});
+
+	test("stops reading an error body that never ends", async () => {
+		// A proxy can answer 503 with a short body and then hold the connection
+		// open. The error path must still honour the first-event deadline.
+		const blocked = Promise.withResolvers<void>();
+		const fetch: FetchImpl = async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('{"message":"upstream busy"}'));
+					},
+					pull() {
+						return blocked.promise;
+					},
+					cancel() {
+						blocked.resolve();
+					},
+				}),
+				{ status: 503, headers: { "content-type": "application/json" } },
+			);
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", profileArn: TEST_PROFILE }),
+			fetch,
+			streamFirstEventTimeoutMs: 30,
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toMatch(/timed out|timeout/i);
+	});
+
+	test("still surfaces a completed error body", async () => {
+		// The deadline must not swallow a body that arrives in full.
+		const fetch: FetchImpl = async () =>
+			Response.json({ __type: "AccessDeniedException", message: "not entitled" }, { status: 403 });
+		const result = await streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", profileArn: TEST_PROFILE }),
+			fetch,
+			streamFirstEventTimeoutMs: 2_000,
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toMatch(/not entitled/);
+	});
+
+	test("classifies an in-stream throttle as retryable", async () => {
+		// The exception frame rides inside an HTTP 200 body, so without a
+		// status the retry classifier reads the turn as terminal.
+		const throttle = eventMessage("throttle", { message: "slow down" }, "exception");
+		throttle.headers[":exception-type"] = "ThrottlingException";
+
+		let thrown: unknown;
+		try {
+			normalizeKiroFrame(throttle);
+		} catch (error) {
+			thrown = error;
+		}
+
+		expect(thrown).toBeInstanceOf(AIError.ProviderHttpError);
+		expect((thrown as AIError.ProviderHttpError).status).toBe(429);
+		expect(AIError.retriable(AIError.classify(thrown))).toBe(true);
+	});
+
+	test("keeps an unknown in-stream exception terminal", async () => {
+		// An unrecognized shape must not be promoted to a retryable status.
+		const unknown = eventMessage("oddity", { message: "who knows" }, "exception");
+		unknown.headers[":exception-type"] = "SomeFutureException";
+
+		let thrown: unknown;
+		try {
+			normalizeKiroFrame(unknown);
+		} catch (error) {
+			thrown = error;
+		}
+
+		expect(thrown).not.toBeInstanceOf(AIError.ProviderHttpError);
+		expect(AIError.retriable(AIError.classify(thrown))).toBe(false);
+	});
+
 	test("reuses the session ID as the Kiro conversation ID across turns", async () => {
 		const conversationIds: string[] = [];
 		const fetch: FetchImpl = async (_input, init) => {
@@ -735,5 +866,45 @@ describe("Kiro stream transport", () => {
 		expect(oauthResult.stopReason).toBe("stop");
 		expect(apiKeyResult.stopReason).toBe("stop");
 		expect(requestedUrls).toEqual([EU_RUNTIME_ENDPOINT, EU_RUNTIME_ENDPOINT, EU_RUNTIME_ENDPOINT]);
+	});
+
+	test("reports truncation instead of running a tool call cut off by MAX_TOKENS", async () => {
+		// The tool frame carries valid-looking but incomplete arguments. Reporting
+		// `toolUse` here would let the agent loop execute them; the truncation
+		// safeguard only applies when the stop reason is `length`.
+		const events: Array<[string, unknown]> = [
+			["assistantResponseEvent", { content: "working" }],
+			["toolUseEvent", { toolUseId: "server/write", name: "write", input: '{"path":"a.txt","content":"partial' }],
+			["metadataEvent", { stopReason: "MAX_TOKENS" }],
+		];
+		const stream = streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", profileArn: TEST_PROFILE }),
+			fetch: async () => responseForEvents(events),
+		});
+		for await (const _event of stream) void _event;
+		const result = await stream.result();
+
+		expect(result.stopReason).toBe("length");
+		// The truncated call is finalized so the transcript shows the intent, but
+		// its half-parsed arguments must never be presented as executable.
+		expect(result.content.find(block => block.type === "toolCall")).toMatchObject({ arguments: {} });
+	});
+
+	test("still reports malformed tool input as an error without truncation", async () => {
+		// Untruncated malformed JSON is a real protocol failure, not a cut-off
+		// frame, so it must not be silently downgraded to empty arguments.
+		const events: Array<[string, unknown]> = [
+			["assistantResponseEvent", { content: "working" }],
+			["toolUseEvent", { toolUseId: "server/write", name: "write", input: '{"path":', stop: true }],
+		];
+		const stream = streamKiro(createModel(), TEST_CONTEXT, {
+			apiKey: JSON.stringify({ token: "kiro-token", profileArn: TEST_PROFILE }),
+			fetch: async () => responseForEvents(events),
+		});
+		for await (const _event of stream) void _event;
+		const result = await stream.result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toMatch(/malformed JSON input/);
 	});
 });

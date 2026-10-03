@@ -506,6 +506,25 @@ describe("Kiro provider discovery", () => {
 		expect(resolveKiroModelCacheProviderId(builderA)).not.toContain("builder-a");
 	});
 
+	test("separates two logins that share an endpoint and keeps one across rotation", () => {
+		// Builder ID bearers carry no profile and two accounts on the same region
+		// resolve the same endpoint, so the endpoint alone cannot scope the cache.
+		const builderLoginA = JSON.stringify({ token: "builder-a", loginId: "login-a", apiEndpoint: API_ENDPOINT });
+		const builderLoginARotated = JSON.stringify({
+			token: "builder-a-rotated",
+			loginId: "login-a",
+			apiEndpoint: API_ENDPOINT,
+		});
+		const builderLoginB = JSON.stringify({ token: "builder-b", loginId: "login-b", apiEndpoint: API_ENDPOINT });
+
+		expect(resolveKiroModelCacheProviderId(builderLoginA)).not.toBe(resolveKiroModelCacheProviderId(builderLoginB));
+		expect(resolveKiroModelCacheProviderId(builderLoginA)).toBe(
+			resolveKiroModelCacheProviderId(builderLoginARotated),
+		);
+		expect(resolveKiroModelCacheProviderId(builderLoginA)).not.toContain("login-a");
+		expect(resolveKiroModelCacheProviderId(builderLoginA)).not.toContain("builder-a");
+	});
+
 	test("prunes static fallback models after a successful live catalog refresh", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-kiro-live-"));
 		try {

@@ -69,6 +69,15 @@ Run `/login kiro` again when:
 - model discovery is using the wrong profile or endpoint; or
 - a present registration endpoint fails validation.
 
+## Transient request failures
+
+Two Kiro runtime responses are retried automatically once, with an identical request body and a fresh request id, and only before any output has been shown:
+
+- `InsufficientModelCapacity`, the runtime's capacity rejection.
+- `HTTP 400 ValidationException: Invalid tool use format.`, which the runtime fleet occasionally returns for a fresh remote session's first request. Replaying the same payload succeeds.
+
+Any other HTTP 400 is terminal and is reported as-is.
+
 ## Troubleshooting
 
 ### `Invalid AWS access portal URL`

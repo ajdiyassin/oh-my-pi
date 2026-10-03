@@ -1017,3 +1017,92 @@ describe("Kiro OAuth API-key projection", () => {
 		expect(result!.newCredentials.access).toBe("access-token");
 	});
 });
+
+describe("Kiro login replacement", () => {
+	function loginResponses(): Response[] {
+		return [
+			json(registeredClient("us-east-1", undefined, false)),
+			json(deviceAuthorization()),
+			json({ accessToken: "access-token", refreshToken: "refresh-token", expiresIn: 3600 }),
+			...profileResponses(),
+		];
+	}
+
+	async function deviceLogin(authStorage: AuthStorage): Promise<void> {
+		const queue = loginResponses();
+		await authStorage.oauth.login("kiro", {
+			onAuth: () => {},
+			onPrompt: async (prompt: OAuthPrompt) => {
+				if (prompt.message.includes("Select Kiro login method")) return "1";
+				return prompt.message === "Enter Start URL" ? "https://example.awsapps.com/start" : "us-east-1";
+			},
+			fetch: async () => queue.shift() ?? json({}, 500),
+		});
+	}
+
+	it("replaces the stored credential on re-login instead of accumulating rows", async () => {
+		const store = await SqliteAuthCredentialStore.open(":memory:");
+		const authStorage = new AuthStorage(store);
+		try {
+			await deviceLogin(authStorage);
+
+			// A second login for the same provider selects the newly stored
+			// account: repeated IdC device grants carry no email or account
+			// claim to dedupe on, so replacement is the only way the old row
+			// cannot pin an existing session.
+			await deviceLogin(authStorage);
+			expect(store.listAuthCredentials("kiro")).toHaveLength(1);
+
+			// An API-key login replaces an earlier OAuth login, so requests and
+			// model discovery cannot keep using the previous OAuth account.
+			await authStorage.oauth.login("kiro", {
+				onAuth: () => {},
+				onPrompt: async (prompt: OAuthPrompt) =>
+					prompt.message.includes("Select Kiro login method") ? "3" : "ksk_replacement-key",
+				fetch: async input => {
+					// The bootstrap probe requires exactly one responsive region.
+					return String(input).includes("eu-central-1") ? json({}, 403) : json(modelCatalog());
+				},
+			});
+			const stored = store.listAuthCredentials("kiro");
+			expect(stored).toHaveLength(1);
+			expect(stored[0]?.credential.type).toBe("api_key");
+			expect(await authStorage.keys.peek("kiro")).not.toContain("access-token");
+		} finally {
+			authStorage.close();
+		}
+	});
+
+	it("scopes the model cache to one login and keeps it across refresh", async () => {
+		const store = await SqliteAuthCredentialStore.open(":memory:");
+		const authStorage = new AuthStorage(store);
+		try {
+			await deviceLogin(authStorage);
+			const first = store.listAuthCredentials("kiro")[0]?.credential;
+			expect(first?.type).toBe("oauth");
+			const firstLoginId = first?.type === "oauth" ? first.kiroLoginId : undefined;
+			expect(typeof firstLoginId).toBe("string");
+
+			// Two logins share the same endpoint, so without the stamped login
+			// id they would hash to the same model-cache namespace.
+			await deviceLogin(authStorage);
+			const second = store.listAuthCredentials("kiro")[0]?.credential;
+			const secondLoginId = second?.type === "oauth" ? second.kiroLoginId : undefined;
+			expect(typeof secondLoginId).toBe("string");
+			expect(secondLoginId).not.toBe(firstLoginId);
+
+			// The login id survives token rotation, so refresh keeps the cache
+			// namespace instead of orphaning the discovered roster.
+			const refreshed = await refreshKiroToken(
+				{ ...(second as OAuthCredentials), expires: 0 },
+				{
+					fetch: async () =>
+						json({ accessToken: "refreshed-access", refreshToken: "refreshed-refresh", expiresIn: 3600 }),
+				},
+			);
+			expect(refreshed.kiroLoginId).toBe(secondLoginId);
+		} finally {
+			authStorage.close();
+		}
+	});
+});

@@ -33,13 +33,19 @@ async function defaultConfigValueResolver(config: string): Promise<string | unde
  */
 function projectKiroApiKey(
 	token: string | undefined,
-	metadata?: { apiEndpoint?: string; profileArn?: string },
+	metadata?: { apiEndpoint?: string; profileArn?: string; loginId?: string },
 ): string | undefined {
 	if (!token) return token;
 	const apiEndpoint = metadata?.apiEndpoint;
 	const profileArn = metadata?.profileArn;
-	if (!apiEndpoint && !profileArn) return token;
-	return JSON.stringify({ token, ...(profileArn ? { profileArn } : {}), ...(apiEndpoint ? { apiEndpoint } : {}) });
+	const loginId = metadata?.loginId;
+	if (!apiEndpoint && !profileArn && !loginId) return token;
+	return JSON.stringify({
+		token,
+		...(profileArn ? { profileArn } : {}),
+		...(apiEndpoint ? { apiEndpoint } : {}),
+		...(loginId ? { loginId } : {}),
+	});
 }
 
 /** Runtime (--api-key) and config (models.yml) key overrides plus the config-value resolver. */
@@ -288,6 +294,7 @@ export class KeyCascade implements KeysApi {
 					return projectKiroApiKey(oauthSelection.credential.access, {
 						apiEndpoint: oauthSelection.credential.apiEndpoint,
 						profileArn: oauthSelection.credential.orgId,
+						loginId: oauthSelection.credential.kiroLoginId,
 					});
 				}
 				return oauthSelection.credential.access;

@@ -75,6 +75,7 @@ export const oauthCredentialSchema: FluentType<OAuthCredential> = type({
 	"kiroClientSecretExpiresAt?": "number",
 	"kiroTokenEndpoint?": "string",
 	"kiroOidcRegion?": "string",
+	"kiroLoginId?": "string",
 });
 
 /** OAuth credential as it appears in broker snapshots — refresh replaced with sentinel. */
@@ -96,6 +97,7 @@ export const remoteOauthCredentialSchema: FluentType<RemoteOAuthCredential> = ty
 	"kiroClientSecretExpiresAt?": "number",
 	"kiroTokenEndpoint?": "string",
 	"kiroOidcRegion?": "string",
+	"kiroLoginId?": "string",
 });
 
 export const apiKeyCredentialSchema: FluentType<ApiKeyCredential> = type({
@@ -103,6 +105,9 @@ export const apiKeyCredentialSchema: FluentType<ApiKeyCredential> = type({
 	type: "'api_key'",
 	key: type("string").atLeastLength(1),
 	"source?": "'login'",
+	// Kiro persists the validated runtime route alongside login-stored keys so
+	// discovery and transport reach the right region without re-probing.
+	"apiEndpoint?": "string",
 });
 
 /** Discriminated union accepted on POST /v1/credential (writes). */

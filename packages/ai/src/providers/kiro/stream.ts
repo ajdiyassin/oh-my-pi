@@ -25,7 +25,14 @@ import {
 } from "../../utils/idle-iterator";
 import { notifyProviderResponse } from "../../utils/provider-response";
 import { decodeEventStream } from "../aws-eventstream";
-import { isKiroCapacityError, KiroApiError, KiroStreamError, kiroHttpError } from "./errors";
+import {
+	isKiroCapacityError,
+	isKiroTransientToolFormatError,
+	KiroApiError,
+	KiroStreamError,
+	kiroHttpError,
+} from "./errors";
+
 import { mergeKiroUsage, normalizeKiroFrame } from "./event-normalizer";
 import { KiroToolAssembler } from "./tool-assembler";
 import { transformKiroRequest } from "./transform";
@@ -161,16 +168,12 @@ function mapStopReason(
 	reason: string | undefined,
 	toolCalls: number,
 ): Extract<StopReason, "stop" | "length" | "toolUse"> {
+	// Truncation wins over an emitted tool call: a tool frame cut off by
+	// MAX_TOKENS holds incomplete arguments, and reporting `toolUse` would let
+	// the agent loop execute it instead of applying its length safeguard.
+	if (reason === "MAX_TOKENS" || reason === "LENGTH") return "length";
 	if (toolCalls > 0) return "toolUse";
-	switch (reason) {
-		case "MAX_TOKENS":
-		case "LENGTH":
-			return "length";
-		case "TOOL_USE":
-			return "toolUse";
-		default:
-			return "stop";
-	}
+	return reason === "TOOL_USE" ? "toolUse" : "stop";
 }
 
 function markVisible(state: AttemptState, stream: AssistantMessageEventStream): void {
@@ -443,20 +446,33 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 						body: JSON.stringify(payload),
 						signal: watchdog.signal,
 					});
-				} finally {
+				} catch (error) {
 					watchdog.clear();
+					throw error;
 				}
+				// The success path hands the body to the idle-timeout iterator, which
+				// owns its own deadline. The error path still needs this watchdog:
+				// reading an error body must not outlive the deadline.
+				if (response.ok) watchdog.clear();
 				const headerRequestId =
 					response.headers.get("x-amzn-requestid") ?? response.headers.get("x-amz-request-id");
 				await notifyProviderResponse(options, response, model, headerRequestId);
 				if (!response.ok) {
-					const error = await kiroHttpError(response);
-					if (isKiroCapacityError(error) && recoveryAttempt < MAX_PRE_OUTPUT_RECOVERY_ATTEMPTS && !state.visible) {
-						recoveryAttempt++;
-						await waitBeforeRecovery(options, options.signal);
-						continue;
+					try {
+						const error = await kiroHttpError(response, watchdog.signal);
+						if (
+							(isKiroCapacityError(error) || isKiroTransientToolFormatError(error)) &&
+							recoveryAttempt < MAX_PRE_OUTPUT_RECOVERY_ATTEMPTS &&
+							!state.visible
+						) {
+							recoveryAttempt++;
+							await waitBeforeRecovery(options, options.signal);
+							continue;
+						}
+						throw error;
+					} finally {
+						watchdog.clear();
 					}
-					throw error;
 				}
 				const responseBody = response.body;
 				if (!responseBody) {
@@ -535,7 +551,7 @@ export function streamKiro(model: Model, context: Context, options: KiroOptions 
 					}
 					throw error;
 				}
-				state.toolAssembler.finishAll();
+				state.toolAssembler.finishAll(state.stopReason === "MAX_TOKENS" || state.stopReason === "LENGTH");
 				finalizeInline(state, stream);
 				if (!state.visible) {
 					if (recoveryAttempt < MAX_PRE_OUTPUT_RECOVERY_ATTEMPTS) {

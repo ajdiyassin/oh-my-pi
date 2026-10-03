@@ -39,8 +39,9 @@ const PROTOTYPE_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype
 export type KiroDiscoveryCredential =
 	| { type: "api_key"; token: string; apiEndpoint?: string }
 	// Builder ID signs in without an organization, so an OAuth bearer may carry no
-	// profile ARN; the runtime region then comes from `apiEndpoint`.
-	| { type: "oauth"; token: string; profileArn?: string; apiEndpoint?: string };
+	// profile ARN; the runtime region then comes from `apiEndpoint`. `loginId`
+	// scopes the model cache to one login when the profile is shared or absent.
+	| { type: "oauth"; token: string; profileArn?: string; apiEndpoint?: string; loginId?: string };
 
 export interface KiroDiscoveryRoute {
 	apiRegion: string;

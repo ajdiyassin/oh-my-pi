@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added the native Kiro provider: sign in with AWS IAM Identity Center, AWS Builder ID, or a Kiro API key (`KIRO_API_KEY`), and stream responses with reasoning, tool calls, and images.
+- Added the native Kiro provider: sign in with AWS IAM Identity Center, AWS Builder ID, or a Kiro API key (`KIRO_API_KEY`), and stream responses with reasoning, tool calls, and images ([#14215](https://github.com/can1357/oh-my-pi/pull/14215) by [@ajdiyassin](https://github.com/ajdiyassin)).
 
 ### Fixed
 

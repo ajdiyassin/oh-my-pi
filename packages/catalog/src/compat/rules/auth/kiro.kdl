@@ -7,4 +7,8 @@ auth "kiro" {
     login "custom" hook="kiro-login"
     refresh hook="kiro-refresh"
     api-key-format "structured"
+    // A re-login names exactly one account or key, so it replaces every stored
+    // Kiro credential instead of accumulating rows (device grants carry no
+    // email/account claim to dedupe on).
+    login-replaces-credentials #true
 }

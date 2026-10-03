@@ -32,11 +32,14 @@ export function parseKiroDiscoveryCredential(value: string): KiroDiscoveryCreden
 				if (!record.token.startsWith(KIRO_API_KEY_PREFIX)) {
 					const profileArn =
 						typeof record.profileArn === "string" && record.profileArn.length > 0 ? record.profileArn : undefined;
+					const loginId =
+						typeof record.loginId === "string" && record.loginId.length > 0 ? record.loginId : undefined;
 					return {
 						type: "oauth",
 						token: record.token,
 						...(profileArn ? { profileArn } : {}),
 						...(apiEndpoint ? { apiEndpoint } : {}),
+						...(loginId ? { loginId } : {}),
 					};
 				}
 				return {
@@ -58,9 +61,11 @@ export function resolveKiroModelCacheProviderId(apiKey?: string): string {
 	const credential = parseKiroDiscoveryCredential(apiKey);
 	const identity =
 		credential.type === "oauth"
-			? // Builder ID has no profile, so its identity is the endpoint; either way the
-				// namespace must survive access-token rotation for the same account.
-				`oauth\u0000${credential.profileArn ?? ""}\u0000${credential.apiEndpoint ?? ""}`
+			? // One login may share its profile or endpoint with another account, so
+				// scope the namespace to the stamped login id. The id survives
+				// access-token rotation but resets on re-login, which trades one
+				// model-list refetch for never serving another account's catalog.
+				`oauth\u0000${credential.loginId ?? credential.profileArn ?? ""}\u0000${credential.apiEndpoint ?? ""}`
 			: `api_key\u0000${credential.token}\u0000${credential.apiEndpoint ?? ""}`;
 	return `kiro:models-v1:${Bun.hash(identity).toString(36)}`;
 }

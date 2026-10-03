@@ -46,12 +46,18 @@ export class KiroToolAssembler {
 				partial: this.output,
 			});
 		}
-		if (event.stop) this.#finish(state);
+		if (event.stop) this.#finish(state, false);
 	}
 
-	finishAll(): void {
+	/**
+	 * Finalize every tool that never received `stop`. A truncated response
+	 * (`truncated: true`) carries cut-off arguments, so those tools finalize
+	 * on a best-effort `{}` instead of throwing: the caller reports `length`,
+	 * and the agent loop then skips them rather than executing partial input.
+	 */
+	finishAll(truncated: boolean): void {
 		for (const state of this.#states.values()) {
-			if (!state.completed) this.#finish(state);
+			if (!state.completed) this.#finish(state, truncated);
 		}
 	}
 
@@ -66,7 +72,7 @@ export class KiroToolAssembler {
 		this.stream.push({ type: "toolcall_start", contentIndex: state.contentIndex, partial: this.output });
 	}
 
-	#finish(state: ToolState): void {
+	#finish(state: ToolState, truncated: boolean): void {
 		this.#start(state);
 		let args = state.snapshot;
 		let delta = state.fragments;
@@ -78,11 +84,15 @@ export class KiroToolAssembler {
 					throw new Error("not an object");
 				}
 				args = parsed as Record<string, unknown>;
-			} catch {
-				throw new KiroStreamError(`Tool ${state.id} completed with malformed JSON input`, {
-					code: "MALFORMED_TOOL_INPUT",
-					kind: "output",
-				});
+			} catch (cause) {
+				if (!truncated) {
+					throw new KiroStreamError(`Tool ${state.id} completed with malformed JSON input`, {
+						code: "MALFORMED_TOOL_INPUT",
+						kind: "output",
+						cause,
+					});
+				}
+				args = {};
 			}
 		}
 		const block = this.output.content[state.contentIndex!] as ToolCall;
