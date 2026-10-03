@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,6 +14,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { kiroModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/special";
 import type { FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
+import { logger } from "@oh-my-pi/pi-utils";
 
 const PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/kiro-default";
 const API_ENDPOINT = "https://management.us-east-1.kiro.dev/";
@@ -102,7 +103,35 @@ function fallbackSpec(): ModelSpec<"kiro-api"> {
 	};
 }
 
+/** Captured live `claude-sonnet-5.5` thinking shape: closed `thinking` object and a `between_tools` mode. */
+function sonnet55Schema(): Record<string, unknown> {
+	const schema = anthropicThinkingSchema(["adaptive", "between_tools"]);
+	const properties = schema.properties as Record<string, Record<string, unknown>>;
+	properties.thinking!.additionalProperties = false;
+	(properties.output_config!.properties as Record<string, Record<string, unknown>>).effort!.default = "high";
+	return schema;
+}
+
+function payloadWithSchemas(entries: Array<[string, Record<string, unknown>]>): Record<string, unknown> {
+	const payload = catalogResponse(entries.map(([id]) => id));
+	(payload.models as Array<Record<string, unknown>>).forEach((model, index) => {
+		model.additionalModelRequestFieldsSchema = entries[index]![1];
+	});
+	return payload;
+}
+
+function discover(payload: unknown) {
+	return kiroModelManagerOptions({
+		apiKey: JSON.stringify({ token: "test-token", apiEndpoint: API_ENDPOINT }),
+		fetch: jsonFetch(payload),
+	}).fetchDynamicModels?.();
+}
+
 describe("Kiro provider discovery", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	test("is authoritative with a fallback default and Kiro discovery wiring", () => {
 		const descriptor = PROVIDER_DESCRIPTORS.find(item => item.providerId === "kiro");
 
@@ -265,16 +294,70 @@ describe("Kiro provider discovery", () => {
 		expect(models?.[0]?.thinking).toMatchObject({ mode: "anthropic-adaptive", defaultLevel: Effort.Medium });
 	});
 
-	test("still rejects an Anthropic thinking enum without adaptive", async () => {
-		const payload = catalogResponse(["claude-nope"]);
-		const model = (payload.models as Array<Record<string, unknown>>)[0]!;
-		model.additionalModelRequestFieldsSchema = anthropicThinkingSchema(["disabled"]);
-		const options = kiroModelManagerOptions({
-			apiKey: JSON.stringify({ token: "disabled-only-token", apiEndpoint: API_ENDPOINT }),
-			fetch: jsonFetch(payload),
-		});
+	test("maps the live claude-sonnet-5.5 schema with thinking metadata", async () => {
+		// Failure mode: the new closed-`thinking` / `between_tools` shape threw and the whole Kiro roster vanished.
+		const models = await discover(payloadWithSchemas([["claude-sonnet-5.5", sonnet55Schema()]]));
 
-		expect(await options.fetchDynamicModels?.()).toBeNull();
+		expect(models?.map(model => model.id)).toEqual(["claude-sonnet-5.5"]);
+		expect(models?.[0]).toMatchObject({ reasoning: true, maxTokens: 128_000 });
+		expect(models?.[0]?.thinking).toMatchObject({
+			mode: "anthropic-adaptive",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			defaultLevel: Effort.High,
+		});
+	});
+
+	test("keeps the roster when one model has an unrecognised schema and warns about it", async () => {
+		// Failure mode: a single unrecognised model dropped every Kiro model from /model.
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const models = await discover(
+			payloadWithSchemas([
+				["claude-good-a", anthropicThinkingSchema(["adaptive", "disabled"])],
+				["claude-garbage", anthropicThinkingSchema(["surprise"])],
+				["claude-sonnet-5.5", sonnet55Schema()],
+			]),
+		);
+
+		expect(models?.map(model => model.id)).toEqual(["claude-good-a", "claude-garbage", "claude-sonnet-5.5"]);
+		expect(models?.[0]?.thinking?.mode).toBe("anthropic-adaptive");
+		expect(models?.[1]?.reasoning).toBe(false);
+		expect(models?.[1]?.thinking).toBeUndefined();
+		expect(models?.[2]?.thinking?.mode).toBe("anthropic-adaptive");
+		const degraded = warn.mock.calls.filter(
+			([, context]) => (context as { modelId?: string })?.modelId === "claude-garbage",
+		);
+		expect(degraded).toHaveLength(1);
+		expect(typeof (degraded[0]![1] as { reason: unknown }).reason).toBe("string");
+	});
+
+	test("does not accept thinking enums without adaptive or unknown thinking keywords as thinking metadata", async () => {
+		const unknownKeyword = anthropicThinkingSchema(["adaptive"]);
+		(unknownKeyword.properties as Record<string, Record<string, unknown>>).thinking!.additionalProperties = true;
+		vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const models = await discover(
+			payloadWithSchemas([
+				["claude-no-adaptive", anthropicThinkingSchema(["disabled"])],
+				["claude-open-thinking", unknownKeyword],
+				["claude-ok", anthropicThinkingSchema(["adaptive"])],
+			]),
+		);
+
+		expect(models?.map(model => [model.id, model.thinking?.mode])).toEqual([
+			["claude-no-adaptive", undefined],
+			["claude-open-thinking", undefined],
+			["claude-ok", "anthropic-adaptive"],
+		]);
+	});
+
+	test("returns null and logs an error when no model can be represented", async () => {
+		// Failure mode: an unusable catalog replaced the cached roster with an empty one.
+		const error = vi.spyOn(logger, "error").mockImplementation(() => {});
+		vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const payload = catalogResponse(["claude-bad-rate"]);
+		Object.assign((payload.models as Array<Record<string, unknown>>)[0]!, { rateMultiplier: 1, rateUnit: "Bogus" });
+
+		expect(await discover(payload)).toBeNull();
+		expect(error).toHaveBeenCalledTimes(1);
 	});
 
 	test("accepts legacy GPT mode+effort reasoning schemas", async () => {
@@ -303,7 +386,11 @@ describe("Kiro provider discovery", () => {
 			fetch: jsonFetch(payload),
 		});
 
-		expect(await options.fetchDynamicModels?.()).toBeNull();
+		vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const models = await options.fetchDynamicModels?.();
+		expect(models?.map(item => [item.id, item.reasoning, item.thinking])).toEqual([
+			["gpt-invalid", false, undefined],
+		]);
 	});
 
 	test("sends the selected OAuth profile ARN in the ListAvailableModels body", async () => {

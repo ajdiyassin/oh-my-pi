@@ -2,7 +2,7 @@
  * Kiro management discovery: bounded AWS JSON 1.0 client, fail-closed
  * sanitizer (additive unknowns tolerated), and schema-derived ModelSpec map.
  */
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { BoundedJsonReadError, readBoundedJson } from "@oh-my-pi/pi-utils/bounded-json";
 import { Effort } from "../effort";
 import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
@@ -350,7 +350,20 @@ function anthropicThinking(model: SanitizedKiroModel): { thinking: ThinkingConfi
 	if (rootSchema.additionalProperties !== false) schemaError(modelId, "anthropic.additionalProperties");
 	const root = exactPropertyNames(modelId, rootSchema, ["thinking", "output_config", "max_tokens"], "anthropic.root");
 
-	exactSchemaKeywords(modelId, root.thinking, ["type", "properties", "required"], "anthropic.thinking");
+	// Kiro began sending `additionalProperties: false` on `thinking` (claude-sonnet-5.5).
+	// Accept exactly that one optional keyword; any other value or keyword still rejects.
+	const thinkingHasClosedShape = root.thinking.additionalProperties === false;
+	if (root.thinking.additionalProperties !== undefined && !thinkingHasClosedShape) {
+		schemaError(modelId, "anthropic.thinking");
+	}
+	exactSchemaKeywords(
+		modelId,
+		root.thinking,
+		thinkingHasClosedShape
+			? ["type", "properties", "required", "additionalProperties"]
+			: ["type", "properties", "required"],
+		"anthropic.thinking",
+	);
 	exactRequired(modelId, root.thinking, ["type"], "anthropic.thinking.required");
 	const thinking = exactPropertyNames(modelId, root.thinking, ["type", "display"], "anthropic.thinking");
 	exactSchemaKeywords(modelId, thinking.type, ["type", "enum"], "anthropic.type");
@@ -361,7 +374,14 @@ function anthropicThinking(model: SanitizedKiroModel): { thinking: ThinkingConfi
 	// `disabled` dropped the entire catalog once Kiro began advertising
 	// adaptive-only models, hiding the provider from the model list instead of
 	// degrading a single model.
-	const thinkingTypes = stringEnum(modelId, thinking.type, new Set(["adaptive", "disabled"]), "anthropic.type");
+	// `between_tools` (claude-sonnet-5.5) is an advertised mode this mapping never
+	// emits; like `disabled` it is tolerated but not required.
+	const thinkingTypes = stringEnum(
+		modelId,
+		thinking.type,
+		new Set(["adaptive", "disabled", "between_tools"]),
+		"anthropic.type",
+	);
 	if (!thinkingTypes.includes("adaptive")) {
 		schemaError(modelId, "anthropic.type");
 	}
@@ -489,12 +509,67 @@ export function mapKiroModel(model: SanitizedKiroModel, runtimeBaseUrl: string):
 	};
 }
 
-/** Convert an authoritative sanitized catalog; one malformed model rejects the refresh. */
+/**
+ * Convert an authoritative sanitized catalog, isolating failures per model.
+ *
+ * The request-fields schema only describes optional request parameters
+ * (thinking/effort/max_tokens), so a model whose schema is unrecognised is
+ * still usable for plain chat. Such a model is exposed with conservative
+ * no-thinking defaults and a warning rather than throwing, so one new or odd
+ * Kiro model can never drop the whole provider from the model list. A model is
+ * skipped only if even the conservative fallback cannot be built (e.g. invalid
+ * rate metadata). If every model is skipped the result is empty and an error is
+ * logged; callers treat that as a failed refresh.
+ */
 export function mapKiroModelCatalog(
 	catalog: SanitizedKiroModelCatalog,
 	runtimeBaseUrl: string,
 ): ModelSpec<"kiro-api">[] {
-	return catalog.models.map(model => mapKiroModel(model, runtimeBaseUrl));
+	const mapped: ModelSpec<"kiro-api">[] = [];
+	for (const model of catalog.models) {
+		try {
+			mapped.push(mapKiroModel(model, runtimeBaseUrl));
+			continue;
+		} catch (error) {
+			logger.warn("Kiro model request schema unrecognised; exposing without thinking controls", {
+				modelId: model.modelId,
+				reason: errorMessage(error),
+			});
+		}
+		try {
+			mapped.push(mapKiroModelWithoutThinking(model, runtimeBaseUrl));
+		} catch (error) {
+			logger.warn("Kiro model skipped: cannot be represented safely", {
+				modelId: model.modelId,
+				reason: errorMessage(error),
+			});
+		}
+	}
+	if (catalog.models.length > 0 && mapped.length === 0) {
+		logger.error("Kiro model catalog yielded no usable models", { modelCount: catalog.models.length });
+	}
+	return mapped;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function mapKiroModelWithoutThinking(model: SanitizedKiroModel, runtimeBaseUrl: string): ModelSpec<"kiro-api"> {
+	const multiplier = premiumMultiplier(model);
+	return {
+		id: model.modelId,
+		name: model.modelName,
+		api: "kiro-api",
+		provider: "kiro",
+		baseUrl: runtimeBaseUrl,
+		reasoning: false,
+		input: model.supportedInputTypes.map(input => (input === "IMAGE" ? "image" : "text")),
+		cost: { ...ZERO_COST },
+		...(multiplier !== undefined ? { premiumMultiplier: multiplier } : {}),
+		contextWindow: model.tokenLimits.maxInputTokens,
+		maxTokens: model.tokenLimits.maxOutputTokens,
+	};
 }
 
 function combineSignals(signals: AbortSignal[]): AbortSignal {
@@ -665,12 +740,18 @@ export async function fetchKiroModels(options: FetchKiroModelsOptions): Promise<
 				fetch: options.fetch,
 				signal: options.signal,
 			});
-			if (!probed) return null;
+			if (!probed) {
+				logger.debug("Kiro model discovery skipped: bootstrap region probe did not resolve a single route");
+				return null;
+			}
 			route = probed.route;
 			payload = probed.payload;
 		} else {
 			route = resolveKiroDiscoveryRoute(credential);
-			if (!route) return null;
+			if (!route) {
+				logger.debug("Kiro model discovery skipped: route unresolved");
+				return null;
+			}
 			const body =
 				credential.type === "oauth" ? { origin: "KIRO_CLI", profileArn: route.profileArn } : { origin: "KIRO_CLI" };
 			payload = await kiroManagementRequest({
@@ -684,8 +765,15 @@ export async function fetchKiroModels(options: FetchKiroModelsOptions): Promise<
 		}
 
 		const catalog = sanitizeKiroModelCatalog(payload);
-		return mapKiroModelCatalog(catalog, route.runtimeBaseUrl);
-	} catch {
+		const models = mapKiroModelCatalog(catalog, route.runtimeBaseUrl);
+		// An empty roster is a failed refresh: keep the last safe cache.
+		return models.length > 0 ? models : null;
+	} catch (error) {
+		if (options.signal?.aborted) {
+			logger.debug("Kiro model discovery aborted", { error: errorMessage(error) });
+		} else {
+			logger.warn("Kiro model discovery failed", { error: errorMessage(error) });
+		}
 		return null;
 	}
 }
