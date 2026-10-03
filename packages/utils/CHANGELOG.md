@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `readBoundedJson` and `readBoundedBytes` for reading HTTP response bodies with a size limit.
+
 ## [18.5.1] - 2026-10-03
 
 ### Added
@@ -252,9 +256,6 @@
 ### Fixed
 
 - Fixed relaxed JSON parsing for single-quoted strings followed by line or block comments.
-### Added
-
-- Added bounded JSON body reading (`readBoundedJson`, `readBoundedBytes`) for size-limited response parsing.
 
 ## [18.1.5] - 2026-09-03
 

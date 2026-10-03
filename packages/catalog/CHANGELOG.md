@@ -2,12 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Kiro to the model catalog with automatic discovery of every model available to the signed-in Kiro account.
+
 ### Fixed
 
 - Fixed DeepSeek V4 model IDs and the V4.1 Flash alias lacking version information in model identity and dashboards ([#14194](https://github.com/can1357/oh-my-pi/issues/14194)).
 - Fixed Antigravity models such as Claude Opus 5.5 and Sonnet 5.5 disappearing after `omp models refresh`. When the update check failed, omp reported an outdated Antigravity client version (2.8.0), so the server left the newer models out of the list. The fallback version is now 2.19.1.
 - DSML tool calls from DeepSeek models are now parsed on every host. This includes local servers (llama.cpp, LM Studio, vLLM), custom providers from `models.yml`, and gateways that weren't on the old list of supported hosts. Before, a complete `<｜DSML｜tool_calls>` envelope from these hosts showed up as plain text and the tool never ran ([#14202](https://github.com/can1357/oh-my-pi/pull/14202) by [@H4vC](https://github.com/H4vC)).
-- Fixed Kiro disappearing from the model list when Kiro added `claude-sonnet-5.5`; the model is now supported, and a model with an unrecognised request schema is shown without thinking controls instead of hiding every Kiro model.
 
 ## [18.5.1] - 2026-10-03
 
@@ -250,8 +253,6 @@
 ### Fixed
 
 - Corrected Yolo-Auto metadata for Qwen Flash: `qwen3.8-flash` and the paid `yolo` route now report the documented 256K context window and use the Qwen chat-template reasoning dialect, with `qwen3.8-flash` as the provider default.
-- Kiro's default model is now `auto`; online discovery replaces the fallback with the account's live models.
-- Kiro opts out of cross-provider same-id catalog reference fills, so discovery-backed context and tokenizer values are no longer overwritten by colliding rows from other hosts.
 
 ## [18.2.4] - 2026-09-17
 
@@ -445,9 +446,6 @@
 ### Changed
 
 - Improved model search and selection so configured roles, provider preferences, and recent usage are prioritized while browsing and filtering models.
-### Added
-
-- Added the native Kiro provider, including declarative authentication policy, credential-scoped live model discovery, and the `kiro-api` streaming transport.
 
 ## [18.1.5] - 2026-09-03
 

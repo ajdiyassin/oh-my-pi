@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the native Kiro provider: sign in with AWS IAM Identity Center, AWS Builder ID, or a Kiro API key (`KIRO_API_KEY`), and stream responses with reasoning, tool calls, and images.
+
 ### Fixed
 
 - Fixed Antigravity chat and image requests sending an outdated client version when the model list came from cache, which could make newer models such as Claude Opus 5.5 unavailable.
@@ -50,12 +54,6 @@
 - Fixed Cursor "prepaid balance is used up" (`USAGE_PRICING_REQUIRED`) failures repeating on the same account instead of rotating to a sibling Cursor credential ([#14053](https://github.com/can1357/oh-my-pi/issues/14053))
 - Sessions no longer get stuck on `400 string_above_max_length` after a model writes its whole tool invocation into the tool name. Tool calls with blank names, names longer than 128 characters, or names containing whitespace or control characters are dropped from replayed history, together with their tool results. This also applies when OpenAI Responses replays its stored native history ([#13985](https://github.com/can1357/oh-my-pi/pull/13985) by [@Xytronix](https://github.com/Xytronix)).
 - Fixed Bedrock Converse requests failing with a "bound to a different conversation" 400 after the system prompt changed under signed thinking: the request is retried once without replayed reasoning ([#14019](https://github.com/can1357/oh-my-pi/pull/14019) by [@nick-maderight](https://github.com/nick-maderight))
-### Added
-
-
-### Changed
-
-- Renamed the `/login kiro` sign-in options to `Identity Center`, `Builder ID`, and `API key`. The previous `AWS` label was ambiguous because a Builder ID is also an AWS account. Each option is now also accepted as a typed answer, not only as a number.
 
 ## [18.4.9] - 2026-10-01
 
@@ -295,9 +293,6 @@
 ### Fixed
 
 - Fixed Anthropic prompt-cache breakpoints stalling when conversations include mid-conversation tool changes, preventing growing message tails from being unnecessarily re-billed as uncached input.
-### Changed
-
-- The Kiro API-key login prompt now requests masked input (`secret: true`), so interactive hosts hide the pasted key instead of echoing it.
 
 ## [18.2.4] - 2026-09-17
 
@@ -526,13 +521,6 @@
 - Fixed OpenCode Go and Zen requests by including the required stable per-conversation session identification.
 - Improved Anthropic prompt caching so explicit cache breakpoints preserve reusable tools and system prompts when the message tail changes.
 - Anthropic and OpenRouter 402 credit-exhaustion errors ("would exceed your available credits", "Insufficient credits") now switch to a sibling account instead of stopping the turn with a retry hint.
-### Added
-
-- Added `/login kiro` with AWS IAM Identity Center device flow, Builder ID placeholder, and `ksk_…` API-key validation, supporting the `KIRO_API_KEY` and `KIRO_API_REGION` environment variables.
-
-### Fixed
-
-- Fixed Kiro models missing from the model list for IAM Identity Center logins: discovery now receives the profile ARN stored at login instead of failing with `Invalid profileArn`.
 
 ## [18.1.5] - 2026-09-03
 
